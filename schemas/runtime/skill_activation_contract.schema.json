@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:synapx-harness:schema:runtime:skill_activation_contract",
+  "title": "SynapX-Harness Skill Activation Contract",
+  "description": "Minimal T06 protocol: SkillActivationContract is the SOLE authoritative transition artifact from ENABLED to ACTIVE_FOR_JOB. Only Core Admission (HARNESS_CORE_ADMISSION) is permitted to issue this contract. The contract is job-bound and never used as a cross-job capability grant. AUTHORIZED ratification chain is intentionally NOT modeled here (POST_SLICE_DEFERRED).",
+  "type": "object",
+  "additionalProperties": false,
+  "unevaluatedProperties": false,
+  "required": [
+    "contract_type",
+    "schema_version",
+    "activation_contract_id",
+    "execution_identity",
+    "extension_id",
+    "skill_id",
+    "allowed_capabilities",
+    "eligibility_receipt_ref",
+    "proposal_ref",
+    "issued_by",
+    "source_revision_ref",
+    "effective_for_job_only"
+  ],
+  "properties": {
+    "contract_type": {
+      "type": "string",
+      "const": "CUSTOMOS_SKILL_ACTIVATION_CONTRACT"
+    },
+    "schema_version": {
+      "type": "string",
+      "const": "0.2.0"
+    },
+    "activation_contract_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable identifier for this contract; core-issued and globally unique per job."
+    },
+    "execution_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["job_id", "task_id", "root_task_id", "attempt_id"],
+      "properties": {
+        "job_id": {"type": "string", "minLength": 1},
+        "task_id": {"type": "string", "minLength": 1},
+        "root_task_id": {"type": "string", "minLength": 1},
+        "attempt_id": {"type": "string", "minLength": 1},
+        "tool_call_id": {"type": ["string", "null"]}
+      },
+      "description": "Job-bound four-tuple (CA-01). attempt_id != task_id (CA-02)."
+    },
+    "extension_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Provider-neutral extension identity (no registry authority claim)."
+    },
+    "skill_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Skill identity bound to the extension. Independent of registry."
+    },
+    "allowed_capabilities": {
+      "type": "array",
+      "minItems": 0,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "enum": [
+          "EXECUTE",
+          "READ",
+          "PROPOSE",
+          "DISPATCH",
+          "OBSERVE"
+        ]
+      },
+      "description": "Closed capability set per T06 minimal protocol. AUTHORIZED is NOT among them (POST_SLICE_DEFERRED)."
+    },
+    "eligibility_receipt_ref": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Eligibility receipt reference (deterministic eligibility decision)."
+    },
+    "proposal_ref": {
+      "type": "string",
+      "minLength": 1,
+      "description": "SkillActivationProposal reference (proposal!=contract)."
+    },
+    "issued_by": {
+      "type": "string",
+      "const": "HARNESS_CORE_ADMISSION",
+      "description": "Hard-lock: only Core Admission may issue this contract. Provider/Scheduler/Registry/LLM will be rejected by the validator."
+    },
+    "source_revision_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository_id", "revision_kind", "revision_value"],
+      "properties": {
+        "repository_id": {"type": "string", "minLength": 1},
+        "revision_kind": {
+          "type": "string",
+          "enum": ["GIT_COMMIT", "CONTENT_TREE_HASH", "SNAPSHOT_ID", "EXTERNAL_REVISION"]
+        },
+        "revision_value": {"type": "string", "minLength": 1},
+        "working_delta_id": {"type": ["string", "null"]}
+      },
+      "description": "Source revision kind (H2-I2-R1, 4-member enum restored). The schema ONLY enumerates the four canonical kinds; anything else is rejected. The schema supports Git-only systems at the enum level (GIT_COMMIT accepted), but the activation_validator runtime remains provider-neutral and does NOT prefer or privilege Git-only inputs."
+    },
+    "effective_for_job_only": {
+      "type": "boolean",
+      "const": true,
+      "description": "Hard invariant: the contract is job-scoped. Cross-job reuse is rejected by the validator."
+    },
+    "issued_at": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional ISO-8601 timestamp for diagnostic receipts."
+    }
+  }
+}

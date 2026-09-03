@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:synapx-harness:schema:okf:okf_concept",
+  "title": "OKF Concept",
+  "description": "Minimal Open Knowledge Format concept. Company-specific fields are explicitly omitted. open extension mode is preserved.",
+  "type": "object",
+  "required": ["type"],
+  "properties": {
+    "type": {"type": "string", "minLength": 1},
+    "title": {"type": "string"},
+    "description": {"type": "string"},
+    "resource": {"type": "string"},
+    "tags": {"type": "array", "items": {"type": "string"}},
+    "timestamp": {"type": "string"}
+  }
+}

@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:synapx-harness:schema:governance:repository_registry",
+  "title": "Communis Repository Registry",
+  "type": "object",
+  "additionalProperties": false,
+  "unevaluatedProperties": false,
+  "required": ["contract_type", "schema_version", "repositories"],
+  "properties": {
+    "contract_type": {
+      "type": "string",
+      "const": "COMMUNIS_REPOSITORY_REGISTRY"
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "service_id": {
+      "type": "string"
+    },
+    "registry_state": {
+      "type": "string"
+    },
+    "authority": {
+      "type": "string"
+    },
+    "repositories": {
+      "type": "array",
+      "minItems": 0,
+      "items": {
+        "type": "object",
+        "required": [
+          "repository_id",
+          "local_path",
+          "role",
+          "analysis_mode",
+          "authority",
+          "ratification_state"
+        ],
+        "properties": {
+          "repository_id": {"type": "string"},
+          "local_path": {"type": "string"},
+          "role": {"type": "string"},
+          "analysis_mode": {"type": "string"},
+          "authority": {"type": "string"},
+          "ratification_state": {"type": "string"}
+        },
+        "additionalProperties": false,
+        "unevaluatedProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {"registry_state": {"const": "DRAFT"}}
+            },
+            "then": {
+              "properties": {
+                "authority": {"const": "NON_AUTHORITATIVE"}
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {"role": {"const": "ANALYSIS_MODE_READ_ONLY"}}
+            },
+            "then": {
+              "properties": {
+                "analysis_mode": {"const": "READ_ONLY"}
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"registry_state": {"const": "DRAFT"}},
+        "required": ["registry_state"]
+      },
+      "then": {
+        "properties": {
+          "authority": {"const": "NON_AUTHORITATIVE"}
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:synapx-harness:schema:governance:release_candidate_bundle",
+  "title": "Communis Release Candidate Bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "unevaluatedProperties": false,
+  "required": [
+    "contract_type",
+    "schema_version",
+    "release_candidate_id",
+    "release_candidate_version",
+    "bundle_sha256",
+    "document_refs",
+    "ratification_status",
+    "execution_authority"
+  ],
+  "properties": {
+    "contract_type": {
+      "type": "string",
+      "const": "COMMUNIS_RC_BUNDLE"
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "release_candidate_id": {
+      "type": "string"
+    },
+    "release_candidate_version": {
+      "type": "string"
+    },
+    "bundle_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "document_refs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["document_id", "document_version", "document_sha256"],
+        "properties": {
+          "document_id": {"type": "string"},
+          "document_version": {"type": "string"},
+          "document_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        },
+        "additionalProperties": false,
+        "unevaluatedProperties": false
+      }
+    },
+    "ratification_status": {
+      "type": "string",
+      "enum": ["PENDING", "RATIFIED", "REPAIR_REQUIRED", "REJECTED"]
+    },
+    "execution_authority": {
+      "type": "boolean",
+      "const": false
+    }
+  }
+}

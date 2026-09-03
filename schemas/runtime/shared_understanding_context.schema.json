@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:synapx-harness:schema:runtime:shared_understanding_context",
+  "title": "SynapX-Harness Shared Understanding Context",
+  "description": "Canonical provider-neutral shared understanding context for Lane C. Contains only context data (facts/assertions/unknowns). No authority, policy, verification, or terminal fields exist; additionalProperties=false rejects any control-plane injection. FACT records are evidence-only; assertions are non-authoritative; unknowns are first-class.",
+  "type": "object",
+  "additionalProperties": false,
+  "unevaluatedProperties": false,
+  "required": [
+    "contract_type",
+    "schema_version",
+    "repository",
+    "facts",
+    "assertions",
+    "unknowns"
+  ],
+  "properties": {
+    "contract_type": {
+      "type": "string",
+      "const": "CUSTOMOS_SHARED_UNDERSTANDING_CONTEXT"
+    },
+    "schema_version": {
+      "type": "string",
+      "enum": ["0.1.0", "0.2.0"]
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "unevaluatedProperties": false,
+      "required": ["repository_id"],
+      "properties": {
+        "repository_id": {"type": "string", "minLength": 1},
+        "revision": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "unevaluatedProperties": false,
+          "required": ["repository_id", "revision_kind", "revision_value"],
+          "properties": {
+            "repository_id": {"type": "string", "minLength": 1},
+            "revision_kind": {
+              "type": "string",
+              "enum": ["GIT_COMMIT", "CONTENT_TREE_HASH", "SNAPSHOT_ID", "EXTERNAL_REVISION"]
+            },
+            "revision_value": {"type": "string", "minLength": 1},
+            "working_delta_id": {"type": ["string", "null"]}
+          }
+        }
+      }
+    },
+    "facts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "unevaluatedProperties": false,
+        "required": [
+          "kind",
+          "key",
+          "source",
+          "provenance",
+          "repository_revision"
+        ],
+        "properties": {
+          "kind": {"type": "string", "const": "FACT"},
+          "key": {"type": "string", "minLength": 1},
+          "value": {
+            "type": ["string", "number", "boolean", "array", "object", "null"]
+          },
+          "source": {"type": "string", "minLength": 1},
+          "provenance": {"type": "string", "minLength": 1},
+          "repository_revision": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "assertions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "unevaluatedProperties": false,
+        "required": [
+          "kind",
+          "key",
+          "value",
+          "source",
+          "provenance",
+          "repository_revision",
+          "confidence",
+          "qualification"
+        ],
+        "properties": {
+          "kind": {"type": "string", "const": "ASSERTION"},
+          "key": {"type": "string", "minLength": 1},
+          "value": {
+            "type": ["string", "number", "boolean", "array", "object", "null"]
+          },
+          "source": {"type": "string", "minLength": 1},
+          "provenance": {"type": "string", "minLength": 1},
+          "repository_revision": {"type": "string", "minLength": 1},
+          "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+          "qualification": {"type": "string", "const": "UNQUALIFIED"}
+        }
+      }
+    },
+    "unknowns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "unevaluatedProperties": false,
+        "required": [
+          "kind",
+          "key",
+          "value",
+          "reason",
+          "source",
+          "provenance",
+          "repository_revision"
+        ],
+        "properties": {
+          "kind": {"type": "string", "const": "UNKNOWN"},
+          "key": {"type": "string", "minLength": 1},
+          "value": {"type": "null"},
+          "reason": {
+            "type": "string",
+            "enum": [
+              "NOT_OBSERVED",
+              "NO_EXPLICIT_SIGNAL",
+              "CONFLICTING_SIGNALS",
+              "UNSUPPORTED_FORMAT",
+              "OUT_OF_SCOPE",
+              "NOT_DETERMINISTICALLY_RESOLVABLE"
+            ]
+          },
+          "source": {"type": "string", "minLength": 1},
+          "provenance": {"type": "string", "minLength": 1},
+          "repository_revision": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "contract_type": "CUSTOMOS_SKILL_ACTIVATION_CONTRACT",
+  "schema_version": "0.2.0",
+  "skill_activation_id": "act-h2-i0-valid-001",
+  "extension_id": "ext-h2-i0-valid-001",
+  "issuer": "CORE_ADMISSION",
+  "activation_scope": {
+    "work_contract_id": "wc-h2-i0-valid-001",
+    "permissions": ["EXECUTE"],
+    "authority": "AUTHORIZED"
+  },
+  "eligibility_receipt_ref": "eligibility:wc-h2-i0-valid-001",
+  "activation_status": "ACTIVE_FOR_JOB"
+}

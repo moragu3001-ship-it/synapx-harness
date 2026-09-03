@@ -1,0 +1,26 @@
+{
+  "contract_type": "CUSTOMOS_STATE_NAMESPACE_REGISTRY",
+  "schema_version": "0.2.0",
+  "namespaces": {
+    "evidence.envelope": {
+      "SEALED": "EVIDENCE_ENVELOPE_SEALED",
+      "SUPERSEDED": "EVIDENCE_ENVELOPE_SUPERSEDED"
+    },
+    "extension.lifecycle": {
+      "ENABLED": "EXTENSION_ENABLED",
+      "ACTIVE_FOR_JOB": "EXTENSION_ACTIVE_FOR_JOB"
+    },
+    "terminal.decision": {
+      "COMPLETED": "TERMINAL_COMPLETED",
+      "BLOCKED_UNKNOWN": "TERMINAL_BLOCKED_UNKNOWN"
+    }
+  },
+  "collision": {
+    "flattened_attempt": {
+      "SEALED": "SEALED",
+      "SUPERSEDED": "SUPERSEDED",
+      "BLOCKED_UNKNOWN": "BLOCKED_UNKNOWN"
+    },
+    "intended_violation": "same string values across namespaces flattened into a single namespace -> fully-qualified disambiguation required"
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:synapx-harness:schema:runtime:evidence_envelope",
+  "title": "SynapX-Harness Evidence Envelope (7-state)",
+  "type": "object",
+  "additionalProperties": false,
+  "unevaluatedProperties": false,
+  "required": [
+    "contract_type",
+    "schema_version",
+    "envelope_id",
+    "envelope_state"
+  ],
+  "properties": {
+    "contract_type": {
+      "type": "string",
+      "const": "CUSTOMOS_EVIDENCE_ENVELOPE"
+    },
+    "schema_version": {
+      "type": "string",
+      "const": "0.2.0"
+    },
+    "envelope_id": {"type": "string", "minLength": 1},
+    "envelope_state": {
+      "type": "string",
+      "enum": [
+        "CREATED",
+        "VALIDATED",
+        "QUALIFIED",
+        "ADMITTED",
+        "SEALED",
+        "REJECTED",
+        "SUPERSEDED"
+      ]
+    },
+    "integrity_status": {
+      "type": "string",
+      "enum": [
+        "CREATED",
+        "VALIDATED",
+        "QUALIFIED",
+        "ADMITTED",
+        "SEALED",
+        "REJECTED",
+        "SUPERSEDED"
+      ]
+    },
+    "work_contract_id": {"type": "string", "minLength": 1},
+    "attempt_index": {"type": "integer", "minimum": 0},
+    "redaction_applied": {"type": "boolean"},
+    "sealed_by": {"type": "string"},
+    "sealed_at": {"type": "string"},
+    "evidence_chain": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  }
+}

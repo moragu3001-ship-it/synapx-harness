@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:synapx-harness:schema:governance:communis_document_profile",
+  "title": "Communis Document Profile",
+  "description": "Communis document profile contract. Every Communis contract must declare contract_type and schema_version. Fail-closed: unevaluated properties are rejected.",
+  "type": "object",
+  "required": ["contract_type", "schema_version"],
+  "additionalProperties": false,
+  "unevaluatedProperties": false,
+  "properties": {
+    "contract_type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "schema_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "document_state": {
+      "type": "string",
+      "enum": [
+        "INBOX",
+        "RAW",
+        "DRAFT",
+        "REVIEW_CANDIDATE",
+        "RELEASE_CANDIDATE",
+        "RATIFIED",
+        "ACTIVE",
+        "SUPERSEDED",
+        "RETIRED"
+      ]
+    },
+    "knowledge_class": {
+      "type": "string",
+      "enum": [
+        "STRUCTURAL_FACT",
+        "SEMANTIC_ASSERTION",
+        "DECISION_CANDIDATE",
+        "UNKNOWN"
+      ]
+    },
+    "authority": {
+      "type": "string",
+      "enum": [
+        "SOURCE_DERIVED",
+        "NON_AUTHORITATIVE",
+        "RATIFIED",
+        "ACTIVE_CANONICAL"
+      ]
+    },
+    "execution_authority": {
+      "type": "boolean"
+    },
+    "content_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "activation_manifest_ref": {
+      "type": "string"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "knowledge_class": {"const": "SEMANTIC_ASSERTION"}
+        },
+        "required": ["knowledge_class"]
+      },
+      "then": {
+        "properties": {
+          "authority": {"const": "NON_AUTHORITATIVE"}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "document_state": {
+            "enum": ["RAW", "DRAFT", "REVIEW_CANDIDATE", "RELEASE_CANDIDATE"]
+          }
+        },
+        "required": ["document_state"]
+      },
+      "then": {
+        "properties": {
+          "execution_authority": {"const": false}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "authority": {"const": "ACTIVE_CANONICAL"}
+        },
+        "required": ["authority"]
+      },
+      "then": {
+        "required": ["activation_manifest_ref"]
+      }
+    }
+  ]
+}

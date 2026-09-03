@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:synapx-harness:schema:governance:ratification_receipt",
+  "title": "Communis Ratification Receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "unevaluatedProperties": false,
+  "required": [
+    "contract_type",
+    "schema_version",
+    "release_candidate_id",
+    "release_candidate_version",
+    "bundle_sha256",
+    "receipt_id",
+    "receipt_sha256",
+    "ratifiers",
+    "ratifiers_required",
+    "ratifiers_approved",
+    "approval_rule",
+    "blocking_issues",
+    "decision"
+  ],
+  "properties": {
+    "contract_type": {
+      "type": "string",
+      "const": "COMMUNIS_RATIFICATION_RECEIPT"
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "release_candidate_id": {
+      "type": "string"
+    },
+    "release_candidate_version": {
+      "type": "string"
+    },
+    "bundle_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "receipt_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "receipt_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "ratifiers": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "required": [
+          "ratifier_id",
+          "decision",
+          "release_candidate_id",
+          "release_candidate_version",
+          "bundle_sha256",
+          "approved_at"
+        ],
+        "properties": {
+          "ratifier_id": {"type": "string", "minLength": 1},
+          "decision": {"type": "string", "enum": ["APPROVE", "REJECT"]},
+          "release_candidate_id": {"type": "string"},
+          "release_candidate_version": {"type": "string"},
+          "bundle_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "approved_at": {"type": "string", "format": "date-time"}
+        },
+        "additionalProperties": false,
+        "unevaluatedProperties": false
+      }
+    },
+    "ratifiers_required": {
+      "type": "integer",
+      "const": 4
+    },
+    "ratifiers_approved": {
+      "type": "integer"
+    },
+    "approval_rule": {
+      "type": "string",
+      "const": "UNANIMOUS"
+    },
+    "blocking_issues": {
+      "type": "integer",
+      "const": 0
+    },
+    "decision": {
+      "type": "string",
+      "const": "RATIFIED"
+    }
+  }
+}

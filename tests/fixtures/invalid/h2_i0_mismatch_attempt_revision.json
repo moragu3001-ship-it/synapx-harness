@@ -1,0 +1,22 @@
+{
+  "contract_type": "CUSTOMOS_VERIFICATION_RESULT",
+  "schema_version": "0.2.0",
+  "work_contract_id": "wc-h2-i0-valid-001",
+  "verification_status": "PASS",
+  "evidence_status": "VALID",
+  "active_blocker_count": 0,
+  "attempt_index": 2,
+  "source_binding": {
+    "source_revision": {
+      "revision_kind": "CONTENT_TREE_HASH",
+      "revision_value": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "source_snapshot_id": "snap-h2-i0-valid-001",
+    "repository_id": "repo-h2-i0"
+  },
+  "semantic_status": "SATISFIED",
+  "exit_status": 0,
+  "requested_checks": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
+  "checks": [],
+  "intended_violation": "attempt_index(2) mismatch with WorkContract attempt_index(1); source_revision value mismatch with WorkContract CONTENT_TREE_HASH"
+}

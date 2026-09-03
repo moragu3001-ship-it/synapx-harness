@@ -1,0 +1,20 @@
+{
+  "contract_type": "CUSTOMOS_EVIDENCE_ENVELOPE",
+  "schema_version": "0.2.0",
+  "evidence_envelope_id": "env-h2-i0-valid-001",
+  "work_contract_id": "wc-h2-i0-valid-001",
+  "integrity_status": "SEALED",
+  "manifest_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "redaction_applied": true,
+  "sealed_at": "2026-08-15T00:00:00.000000+00:00",
+  "source_binding": {
+    "source_revision": {
+      "revision_kind": "CONTENT_TREE_HASH",
+      "revision_value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "source_snapshot_id": "snap-h2-i0-valid-001",
+    "repository_id": "repo-h2-i0"
+  },
+  "sealer": "CORE_EVIDENCE_SEALER",
+  "artifact_refs": ["verification_result:wc-h2-i0-valid-001"]
+}

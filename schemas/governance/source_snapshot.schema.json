@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:synapx-harness:schema:governance:source_snapshot",
+  "title": "Communis Source Snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "unevaluatedProperties": false,
+  "required": ["contract_type", "schema_version", "repository_id", "commit_sha"],
+  "properties": {
+    "contract_type": {"type": "string", "const": "COMMUNIS_SOURCE_SNAPSHOT"},
+    "schema_version": {"type": "string"},
+    "repository_id": {"type": "string"},
+    "commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "captured_at": {"type": "string", "format": "date-time"}
+  }
+}

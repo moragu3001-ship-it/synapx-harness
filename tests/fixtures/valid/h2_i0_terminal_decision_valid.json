@@ -1,0 +1,14 @@
+{
+  "contract_type": "CUSTOMOS_TERMINAL_DECISION",
+  "schema_version": "0.2.0",
+  "work_contract_id": "wc-h2-i0-valid-001",
+  "decision": "COMPLETED",
+  "reason": "all invariants satisfied",
+  "issued_by": "TERMINAL_FINALIZER",
+  "verification_result_ref": "verification_result:wc-h2-i0-valid-001",
+  "attempt_index": 1,
+  "source_revision_ref": {
+    "revision_kind": "CONTENT_TREE_HASH",
+    "revision_value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+}

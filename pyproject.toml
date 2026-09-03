@@ -1,0 +1,50 @@
+[project]
+name = "synapx-harness"
+version = "0.1.0-dev"
+description = "SynapX-Harness Core Scaffold and Contract Skeleton"
+requires-python = ">=3.12"
+dependencies = [
+    "jsonschema>=4.26.0",
+    "markdown-it-py>=4.2.0",
+    "pydantic>=2.13.4",
+    "ruamel-yaml>=0.19.1",
+    "typer>=0.27.0",
+]
+
+[project.scripts]
+synapx-harness = "synapx_harness.cli.main:app"
+synapx = "synapx_harness.cli.frontdoor:main"
+
+[build-system]
+requires = ["uv_build>=0.11.31,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.161.0",
+    "pyright>=1.1.411",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.15.22",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/synapx_harness/cli/main.py" = ["B008"]
+
+[tool.pyright]
+pythonVersion = "3.12"
+include = ["src", "tests"]
+exclude = [".venv", "schemas"]
+venvPath = "."
+venv = ".venv"
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]

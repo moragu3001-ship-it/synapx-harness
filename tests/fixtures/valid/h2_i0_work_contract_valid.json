@@ -1,0 +1,19 @@
+{
+  "contract_type": "CUSTOMOS_WORK_CONTRACT",
+  "schema_version": "0.2.0",
+  "work_contract_id": "wc-h2-i0-valid-001",
+  "phase": "H2",
+  "risk_class": "R0",
+  "objective": "execute RED freeze qualification fixture",
+  "scope": ["tests"],
+  "success_criteria": ["fixture loads", "schema-valid under 0.2.0"],
+  "task_type": "TEST_REPAIR",
+  "execution_identity": {
+    "dispatch_id": "dispatch-h2-i0-valid-001",
+    "attempt_index": 1
+  },
+  "source_revision_ref": {
+    "revision_kind": "CONTENT_TREE_HASH",
+    "revision_value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+}

@@ -1,0 +1,60 @@
+# --- Python / build (inherited from H2-validated baseline) ---
+.venv/
+.venv-fc1/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.node_modules/
+node_modules/
+.obsidian/workspace*
+.obsidian/cache
+.obsidian/plugins
+nul
+dist/
+*.egg-info/
+# --- RQ-0 census-derived public-safety exclusions -------------------------
+# These patterns are derived from PUBLIC_ALPHA_RQ0_SOURCE_CENSUS.json:
+# every subtree classified HISTORICAL_H2_EVIDENCE, RELEASE_EVIDENCE_ONLY,
+# LOCAL_ONLY or EXCLUDED_PRIVATE is made un-stageable here so that a future
+# `git add .` cannot reintroduce private or internal material.
+# sealed evidence archives and their sidecars
+*.zip
+*.7z
+*.tar
+*.tar.gz
+*.tgz
+*.whl
+# developer session dumps and local captures
+session-ses_*.md
+_neg_capture.txt
+# H2 / post-H2 evidence namespaces
+# NOTE: these MUST be root-anchored. Unanchored patterns are matched by git at
+# ANY depth and would swallow the runtime packages src/synapx_harness/review/
+# and src/synapx_harness/evidence/ and the resource dir schemas/review/.
+/post_h2_integration_*/
+/lane_d_evidence/
+/baseline/
+/evidence/
+/review/
+/production_repair/
+/tasks_local/
+/_workspace_scratch/
+/_runs/
+/04_VERIFIER/
+/docs/synapx-harness-migration/
+# local agent runtime metadata
+.kilo/
+# test / coverage caches
+.mypy_cache/
+.hypothesis/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pytest_cache/
+# IDE / OS metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

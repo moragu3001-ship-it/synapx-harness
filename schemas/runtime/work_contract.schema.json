@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:synapx-harness:schema:runtime:work_contract",
+  "title": "SynapX-Harness Work Contract",
+  "description": "Canonical WorkContract payload for CUSTOMOS_WORK_CONTRACT. Schema version 0.2.0 extends 0.1.0 with optional fields: execution_identity, source_revision_ref, task_type, admission_receipt, receipt_refs, issuer. Legacy 0.1.0 payloads (without those fields) continue to validate for backward compatibility (H2-X5/06 legacy_schema_preservation).",
+  "type": "object",
+  "additionalProperties": false,
+  "unevaluatedProperties": false,
+  "required": [
+    "contract_type",
+    "schema_version",
+    "work_contract_id",
+    "phase",
+    "risk_class",
+    "objective",
+    "scope"
+  ],
+  "properties": {
+    "contract_type": {
+      "type": "string",
+      "const": "CUSTOMOS_WORK_CONTRACT"
+    },
+    "schema_version": {
+      "type": "string",
+      "enum": ["0.1.0", "0.2.0"]
+    },
+    "work_contract_id": {"type": "string", "minLength": 1},
+    "phase": {"type": "string", "minLength": 1},
+    "risk_class": {"type": "string", "enum": ["R0", "R1", "R2", "R3", "R4"]},
+    "objective": {"type": "string", "minLength": 1},
+    "scope": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "success_criteria": {"type": "array", "items": {"type": "string"}},
+
+    "issuer": {
+      "type": ["string", "null"],
+      "enum": [null, "HARNESS_CORE_ADMISSION"],
+      "description": "Present iff the WorkContract is admitted by Core Admission (X3 CA-06)."
+    },
+    "admission_receipt": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["receipt_id", "admitted_at", "admitted_by"],
+      "properties": {
+        "receipt_id": {"type": "string", "minLength": 1},
+        "admitted_at": {"type": "string", "minLength": 1},
+        "admitted_by": {"type": "string", "const": "HARNESS_CORE_ADMISSION"},
+        "classification_receipt": {"type": "string", "minLength": 1},
+        "risk_classification_receipt": {"type": "string", "minLength": 1},
+        "revision_verification_receipt": {"type": "string", "minLength": 1}
+      }
+    },
+    "permission_receipt_ref": {"type": ["string", "null"], "minLength": 1},
+    "eligibility_receipt_ref": {"type": ["string", "null"], "minLength": 1},
+    "execution_receipt_ref": {"type": ["string", "null"], "minLength": 1},
+
+    "execution_identity": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["job_id", "task_id", "attempt_id"],
+      "properties": {
+        "job_id": {"type": "string", "minLength": 1},
+        "task_id": {"type": "string", "minLength": 1},
+        "root_task_id": {"type": ["string", "null"]},
+        "attempt_id": {"type": "string", "minLength": 1},
+        "tool_call_id": {"type": ["string", "null"]}
+      }
+    },
+    "source_revision_ref": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["repository_id", "revision_kind", "revision_value"],
+      "properties": {
+        "repository_id": {"type": "string", "minLength": 1},
+        "revision_kind": {
+          "type": "string",
+          "enum": ["GIT_COMMIT", "CONTENT_TREE_HASH", "SNAPSHOT_ID", "EXTERNAL_REVISION"]
+        },
+        "revision_value": {"type": "string", "minLength": 1},
+        "working_delta_id": {"type": ["string", "null"]}
+      }
+    },
+    "task_type": {
+      "type": ["string", "null"],
+      "enum": [null,
+        "BUG_FIX",
+        "TEST_REPAIR",
+        "DOC_FIX",
+        "REVIEW_FIX",
+        "WORK_ADMISSION",
+        "SCHEMA_REVISION",
+        "ADAPTER_FIX",
+        "INFRA_FIX",
+        "LOG_FIX",
+        "NAMESPACE_REPAIR",
+        "GOVERNANCE_FIX",
+        "REVISION_BINDING",
+        "SOURCE_BINDING",
+        "GUARDRAIL_TRIM",
+        "DOCS_TRIM"
+      ]
+    }
+  }
+}

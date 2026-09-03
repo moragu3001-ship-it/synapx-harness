@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:synapx-harness:schema:runtime:verification_result",
+  "title": "SynapX-Harness Verification Result (canonical 18-check capable)",
+  "type": "object",
+  "additionalProperties": false,
+  "unevaluatedProperties": false,
+  "required": [
+    "contract_type",
+    "schema_version",
+    "work_contract_id",
+    "verification_status",
+    "evidence_status",
+    "active_blocker_count"
+  ],
+  "properties": {
+    "contract_type": {
+      "type": "string",
+      "const": "CUSTOMOS_VERIFICATION_RESULT"
+    },
+    "schema_version": {
+      "type": "string",
+      "enum": ["0.1.0", "0.2.0"]
+    },
+    "work_contract_id": {"type": "string", "minLength": 1},
+    "attempt_index": {"type": "integer", "minimum": 0},
+    "verification_status": {"type": "string", "enum": ["PASS", "FAIL", "PENDING"]},
+    "evidence_status": {"type": "string", "enum": ["VALID", "INVALID", "PENDING"]},
+    "active_blocker_count": {"type": "integer", "minimum": 0},
+    "checks": {"type": "array", "items": {"type": "object"}},
+    "requested_checks": {
+      "type": "array",
+      "items": {"type": "integer", "minimum": 1, "maximum": 18}
+    },
+    "source_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_revision", "source_snapshot_id", "repository_id"],
+      "properties": {
+        "source_revision": {"type": "object"},
+        "source_snapshot_id": {"type": "string", "minLength": 1},
+        "repository_id": {"type": "string", "minLength": 1}
+      }
+    },
+    "legacy_view": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "verification_status": {"type": "string", "enum": ["PASS", "FAIL", "PENDING"]},
+        "active_blocker_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "canonical_view": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "verification_status": {"type": "string", "enum": ["PASS", "FAIL", "PENDING"]},
+        "active_blocker_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "evidence_timestamp": {"type": "string"},
+    "verified_at": {"type": "string"},
+    "admission_outcome": {"type": "string"}
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:synapx-harness:schema:governance:profile",
+  "title": "Communis Profile",
+  "type": "object",
+  "additionalProperties": false,
+  "unevaluatedProperties": false,
+  "required": ["contract_type", "schema_version", "profile_id"],
+  "properties": {
+    "contract_type": {"type": "string", "minLength": 1},
+    "schema_version": {"type": "string"},
+    "profile_id": {"type": "string"},
+    "profile_state": {"type": "string"},
+    "authority": {"type": "string"},
+    "description": {"type": "string"},
+    "target_repositories": {"type": "array", "items": {"type": "string"}},
+    "scope": {
+      "oneOf": [
+        {"type": "object"},
+        {"type": "array", "items": {"type": "object"}}
+      ]
+    }
+  }
+}

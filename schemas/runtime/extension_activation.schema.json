@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:synapx-harness:schema:runtime:extension_activation",
+  "title": "SynapX-Harness Extension Activation Receipt",
+  "description": "Minimal transition evidence for ENABLED -> ACTIVE_FOR_JOB. The receipt is the post-transition attestation; it is NOT itself an authority artifact. Authorization/issuance flows exclusively through the SkillActivationContract, which must be referenced by activation_contract_id. AUTHORIZED state is explicitly OUT OF SCOPE in I2.",
+  "type": "object",
+  "additionalProperties": false,
+  "unevaluatedProperties": false,
+  "required": [
+    "contract_type",
+    "schema_version",
+    "extension_id",
+    "skill_id",
+    "from_state",
+    "to_state",
+    "activation_contract_id",
+    "job_id",
+    "attempt_id",
+    "issuer",
+    "transition",
+    "timestamp"
+  ],
+  "properties": {
+    "contract_type": {
+      "type": "string",
+      "const": "CUSTOMOS_EXTENSION_ACTIVATION_RECEIPT"
+    },
+    "schema_version": {
+      "type": "string",
+      "const": "0.2.0"
+    },
+    "extension_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "skill_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "from_state": {
+      "type": "string",
+      "enum": ["INSTALLED", "AVAILABLE", "ENABLED"]
+    },
+    "to_state": {
+      "type": "string",
+      "const": "ACTIVE_FOR_JOB",
+      "description": "T06 minimal protocol: receipt only emits for the final transition."
+    },
+    "activation_contract_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "ActivationContract reference; absence => receipt cannot be issued."
+    },
+    "job_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "attempt_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "issuer": {
+      "type": "string",
+      "const": "HARNESS_CORE_ADMISSION",
+      "description": "Only Core Admission may emit this receipt."
+    },
+    "transition": {
+      "type": "string",
+      "enum": ["ENABLED_TO_ACTIVE_FOR_JOB"],
+      "description": "Audit-friendly transition string; no other transitions accepted."
+    },
+    "timestamp": {
+      "type": "string",
+      "minLength": 1
+    },
+    "eligibility_receipt_ref": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Forwarded from the activation contract for trace reconstruction."
+    }
+  }
+}

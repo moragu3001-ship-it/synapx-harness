@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:synapx-harness:schema:governance:service_pack_manifest",
+  "title": "Communis Service Pack Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "unevaluatedProperties": false,
+  "required": ["contract_type", "schema_version", "service_id", "service_pack_state", "authority"],
+  "properties": {
+    "contract_type": {"type": "string", "minLength": 1},
+    "schema_version": {"type": "string"},
+    "service_id": {"type": "string"},
+    "service_pack_state": {"type": "string"},
+    "authority": {"type": "string"},
+    "core_package": {"type": "object"},
+    "okf_contract": {"type": "object"},
+    "governance_contract": {"type": "object"},
+    "runtime_contract": {"type": "object"},
+    "knowledge_authority": {"type": "object"},
+    "pilot_risk": {"type": "object"},
+    "forbidden_in_phase": {"type": "array", "items": {"type": "string"}}
+  }
+}

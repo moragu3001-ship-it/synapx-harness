@@ -1,0 +1,22 @@
+{
+  "r4_canonical_bom_count": 0,
+  "inherited_legacy_bom_count": 158,
+  "inherited_legacy_bom_files": [
+    "customos-core/schemas/governance/ratification_receipt.schema.json",
+    "customos-core/schemas/governance/activation_manifest.schema.json",
+    "customos-core/schemas/governance/release_candidate_bundle.schema.json",
+    "customos-core/schemas/governance/source_snapshot.schema.json",
+    "customos-core/schemas/governance/repository_registry.schema.json",
+    "customos-core/schemas/governance/profile.schema.json",
+    "customos-core/schemas/governance/policy.schema.json",
+    "customos-core/schemas/governance/knowledge_item.schema.json",
+    "customos-core/schemas/governance/communis_document_profile.schema.json",
+    "customos-core/schemas/runtime/work_contract.schema.json",
+    "customos-core/schemas/runtime/verification_result.schema.json",
+    "customos-core/schemas/runtime/terminal_decision.schema.json",
+    "customos-core/schemas/okf/okf_concept.schema.json",
+    "communis-pilot-service-pack/evidence/COMMUNIS-CUSTOMOS-BOOTSTRAP-P1-P2-R1/terminal_receipt.json",
+    "communis-pilot-service-pack/evidence/COMMUNIS-CUSTOMOS-BOOTSTRAP-P1-P2-R2/terminal_receipt.json"
+  ],
+  "legacy_files_modified": false
+}

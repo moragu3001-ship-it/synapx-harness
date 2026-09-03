@@ -1,0 +1,130 @@
+{
+  "contract_type": "CUSTOMOS_VERIFICATION_RESULT",
+  "schema_version": "0.2.0",
+  "work_contract_id": "wc-h2-i0-valid-001",
+  "verification_status": "PASS",
+  "evidence_status": "VALID",
+  "active_blocker_count": 0,
+  "attempt_index": 1,
+  "source_binding": {
+    "source_revision": {
+      "revision_kind": "CONTENT_TREE_HASH",
+      "revision_value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "source_snapshot_id": "snap-h2-i0-valid-001",
+    "repository_id": "repo-h2-i0"
+  },
+  "semantic_status": "SATISFIED",
+  "exit_status": 0,
+  "requested_checks": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
+  "checks": [
+    {
+      "check_id": 1,
+      "name": "supported contract_type",
+      "tier": "A",
+      "result": "PASS"
+    },
+    {
+      "check_id": 2,
+      "name": "supported schema_version",
+      "tier": "A",
+      "result": "PASS"
+    },
+    {
+      "check_id": 3,
+      "name": "known verifier",
+      "tier": "A",
+      "result": "PASS"
+    },
+    {
+      "check_id": 4,
+      "name": "valid verifier version",
+      "tier": "A",
+      "result": "PASS"
+    },
+    {
+      "check_id": 5,
+      "name": "job/task/attempt identity",
+      "tier": "A",
+      "result": "PASS"
+    },
+    {
+      "check_id": 6,
+      "name": "correct source_snapshot_id",
+      "tier": "A",
+      "result": "PASS"
+    },
+    {
+      "check_id": 7,
+      "name": "correct source_revision (kind+value)",
+      "tier": "A",
+      "result": "PASS"
+    },
+    {
+      "check_id": 8,
+      "name": "correct repository scope",
+      "tier": "A",
+      "result": "PASS"
+    },
+    {
+      "check_id": 9,
+      "name": "correct working_delta_id",
+      "tier": "A",
+      "result": "PASS"
+    },
+    {
+      "check_id": 10,
+      "name": "required evidence present",
+      "tier": "A",
+      "result": "PASS"
+    },
+    {
+      "check_id": 11,
+      "name": "evidence hash integrity",
+      "tier": "A",
+      "result": "PASS"
+    },
+    {
+      "check_id": 12,
+      "name": "timestamp/freshness validity",
+      "tier": "A",
+      "result": "PASS"
+    },
+    {
+      "check_id": 13,
+      "name": "process exit consistency",
+      "tier": "A",
+      "result": "PASS"
+    },
+    {
+      "check_id": 14,
+      "name": "semantic result consistency",
+      "tier": "A",
+      "result": "PASS"
+    },
+    {
+      "check_id": 15,
+      "name": "required check completeness",
+      "tier": "A",
+      "result": "PASS"
+    },
+    {
+      "check_id": 16,
+      "name": "unresolved critical unknown absence",
+      "tier": "S",
+      "result": "PASS"
+    },
+    {
+      "check_id": 17,
+      "name": "legacy/extension dual-view consistency",
+      "tier": "A",
+      "result": "PASS"
+    },
+    {
+      "check_id": 18,
+      "name": "active blocker totality",
+      "tier": "S",
+      "result": "PASS"
+    }
+  ]
+}

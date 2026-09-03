@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:synapx-harness:schema:runtime:terminal_decision",
+  "title": "SynapX-Harness Terminal Decision Record (sole issuer capable)",
+  "type": "object",
+  "additionalProperties": false,
+  "unevaluatedProperties": false,
+  "required": [
+    "contract_type",
+    "schema_version",
+    "work_contract_id",
+    "decision",
+    "reason"
+  ],
+  "properties": {
+    "contract_type": {
+      "type": "string",
+      "const": "CUSTOMOS_TERMINAL_DECISION"
+    },
+    "schema_version": {
+      "type": "string",
+      "enum": ["0.1.0", "0.2.0"]
+    },
+    "work_contract_id": {"type": "string", "minLength": 1},
+    "decision": {"type": "string", "enum": ["COMPLETED", "FAILED", "BLOCKED"]},
+    "reason": {"type": "string", "minLength": 1},
+    "issuer": {"type": "string"},
+    "issued_at": {"type": "string"},
+    "verification_result_ref": {"type": "string", "minLength": 1},
+    "attempt_index": {"type": "integer", "minimum": 0},
+    "source_revision_ref": {"type": "object"},
+    "terminalization_input_ref": {"type": "string", "minLength": 1},
+    "evidence_chain": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "decision_candidates": {
+      "type": "array",
+      "items": {"type": "string", "enum": ["COMPLETED", "FAILED", "BLOCKED"]}
+    }
+  }
+}

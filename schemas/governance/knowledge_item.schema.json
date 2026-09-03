@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:synapx-harness:schema:governance:knowledge_item",
+  "title": "Communis Knowledge Item",
+  "type": "object",
+  "additionalProperties": false,
+  "unevaluatedProperties": false,
+  "required": ["contract_type", "schema_version", "knowledge_class", "authority"],
+  "properties": {
+    "contract_type": {
+      "type": "string",
+      "const": "COMMUNIS_KNOWLEDGE_ITEM"
+    },
+    "schema_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "knowledge_class": {
+      "type": "string",
+      "enum": [
+        "STRUCTURAL_FACT",
+        "SEMANTIC_ASSERTION",
+        "DECISION_CANDIDATE",
+        "UNKNOWN"
+      ]
+    },
+    "authority": {
+      "type": "string",
+      "enum": [
+        "SOURCE_DERIVED",
+        "NON_AUTHORITATIVE",
+        "RATIFIED",
+        "ACTIVE_CANONICAL"
+      ]
+    },
+    "source_ref": {
+      "type": "string"
+    },
+    "content_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "activation_manifest_ref": {
+      "type": "string"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"knowledge_class": {"const": "SEMANTIC_ASSERTION"}},
+        "required": ["knowledge_class"]
+      },
+      "then": {
+        "properties": {
+          "authority": {"const": "NON_AUTHORITATIVE"}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"authority": {"const": "ACTIVE_CANONICAL"}},
+        "required": ["authority"]
+      },
+      "then": {
+        "required": ["activation_manifest_ref"]
+      }
+    }
+  ]
+}
