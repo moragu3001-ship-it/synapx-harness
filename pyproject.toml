@@ -1,8 +1,10 @@
 [project]
 name = "synapx-harness"
 version = "0.1.0-dev"
-description = "SynapX-Harness Core Scaffold and Contract Skeleton"
+description = "Assurance harness for governed coding-agent execution, verification, evidence, and completion control."
 requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 dependencies = [
     "jsonschema>=4.26.0",
     "markdown-it-py>=4.2.0",
