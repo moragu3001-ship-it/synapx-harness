@@ -441,5 +441,64 @@ def main() -> None:
     frontdoor_app()
 
 
+# ---------------------------------------------------------------------------
+# RQ4-R2-C3 public governed run subcommand.
+#
+# The default ``synapx`` entry stays bound to ``FrontDoorRuntimeBridge`` so
+# existing tests and the agent-DONE presentation surface remain unchanged.
+# The ``run`` subcommand is the canonical positive path for RQ4-R2-C3: it
+# drives Shared Understanding -> WorkContract -> Admission ->
+# ExecutionIdentity -> canonical AgentRequest -> real CodexAdapter
+# (SubprocessCodexRuntime) -> read-only Codex -> structured proposal ->
+# mutation chain -> independent verifier -> evidence seal -> terminal
+# decision issuance -> Front Door presentation.
+# ---------------------------------------------------------------------------
+
+governed_app = typer.Typer(
+    help="RQ4-R2-C3 public governed execution (positive path).",
+    no_args_is_help=False,
+    add_completion=False,
+)
+frontdoor_app.add_typer(governed_app, name="run")
+
+
+def _build_governed_runtime(workspace: Path) -> Any:
+    """Construct the workspace-bound governed runtime bridge."""
+    from synapx_harness.cli.governed_runtime_bridge import (
+        GovernedFrontDoorRuntimeBridge,
+    )
+
+    return GovernedFrontDoorRuntimeBridge(workspace_root=str(workspace))
+
+
+def _render_governed_result(presentation: PresentationResult) -> None:
+    typer.echo(presentation.status)
+    if presentation.reason and presentation.status != "VERIFIED":
+        typer.echo(f"Reason: {presentation.reason}", err=True)
+
+
+@governed_app.callback(invoke_without_command=True)
+def governed_callback(
+    ctx: typer.Context,
+    workspace: WorkspaceOption = None,
+    task: TaskOption = None,
+) -> None:
+    """Run the RQ4-R2-C3 public governed lifecycle."""
+    if ctx.invoked_subcommand is not None:
+        return
+    if not task:
+        typer.echo("NEEDS_ATTENTION", err=True)
+        typer.echo("Reason: --task is required for the governed run.", err=True)
+        raise typer.Exit(code=1)
+    workspace_name, workspace_path = _detect_workspace(workspace)
+    typer.echo(f"Workspace: {workspace_name}")
+    runtime = _build_governed_runtime(workspace_path)
+    presentation = runtime.invoke(task)
+    if presentation is None:
+        typer.echo("NEEDS_ATTENTION", err=True)
+        raise typer.Exit(code=1)
+    _render_governed_result(presentation)
+
+
 if __name__ == "__main__":
     main()
