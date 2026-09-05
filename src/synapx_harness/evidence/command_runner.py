@@ -171,15 +171,29 @@ _ABSOLUTE_POSIX = re.compile(r"^/.*")
 _ABSOLUTE_WINDOWS = re.compile(r"^[A-Za-z]:")
 
 
-def _verify_write_token_path(raw: object) -> str:
-    """Normalize a write token path; reject unsafe paths with INVALID_WRITE_SET_PATH.
+def normalize_write_token_path(raw: object) -> str:
+    """Canonical write-token / proposal path normalizer (RQ4-R2-C2-R2).
 
-    The same routine is used both for declared scope write tokens and for
-    observed mutation paths so that "OK in scope, unsafe in mutation" or
-    vice versa is impossible to express. Posix-style normalization:
-    backslashes are folded to forward slashes, leading ``./`` segments
-    are stripped, traversal segments (``..``) and absolute paths are
-    rejected with a deterministic ``INVALID_WRITE_SET_PATH`` message.
+    RQ4-R2-C2 §9 contract requires:
+
+        valid in WorkContract iff valid in proposal
+
+    Both layers MUST call THIS function so the two semantics cannot
+    diverge. Posix-style normalization: backslashes are folded to forward
+    slashes, leading ``./`` segments are stripped, traversal segments
+    (``..``) and absolute paths are rejected with a deterministic
+    ``INVALID_WRITE_SET_PATH`` message. Character content is otherwise
+    preserved verbatim (interior spaces, parentheses, ``@``, non-ASCII,
+    etc. are accepted).
+
+    Raises
+    ------
+    ValueError
+        When ``raw`` is not a non-empty string, is a POSIX / Windows
+        absolute path, contains a ``..`` traversal segment, or collapses
+        to ``.`` / empty after normalization. The message always carries
+        the deterministic ``(INVALID_WRITE_SET_PATH)`` token so callers
+        can branch on a stable contract surface.
     """
     if not isinstance(raw, str) or not raw:
         raise ValueError(
@@ -202,6 +216,17 @@ def _verify_write_token_path(raw: object) -> str:
             f"empty write path after normalization (INVALID_WRITE_SET_PATH): {raw!r}"
         )
     return s
+
+
+def _verify_write_token_path(raw: object) -> str:
+    """Backward-compatible alias for :func:`normalize_write_token_path`.
+
+    Existing call sites and tests still import ``_verify_write_token_path``.
+    The implementation is delegated to the canonical normalizer so there
+    is exactly ONE definition of "what is a valid write path" in the
+    codebase.
+    """
+    return normalize_write_token_path(raw)
 
 
 def _extract_scope_writes(scope: list[str]) -> list[str]:
@@ -404,6 +429,7 @@ def run_controlled(
 __all__ = [
     "CommandResult",
     "assert_mutation_paths_allowed",
+    "normalize_write_token_path",
     "run_command",
     "run_controlled",
 ]

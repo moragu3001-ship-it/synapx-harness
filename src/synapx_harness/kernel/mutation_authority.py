@@ -19,6 +19,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from synapx_harness.kernel.mutation_proposal_contract import (
+    PROPOSAL_BEGIN,
+    PROPOSAL_END,
+)
+
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
@@ -97,6 +102,159 @@ class PatchProposalParser:
             valid=False, paths=[], hunks=[], old_lines=[], new_lines=[],
             sha256='', raw_input_sha256=raw_sha, canonical_patch_sha256='',
             parse_error='No valid patch proposal found in output',
+        )
+
+    # -- RQ4-R2 strict canonical decoder ---------------------------------
+    # The three heuristic strategies above exist for legacy compatibility.
+    # They accept free-form prose, and RQ4-R2 §5 forbids applying free-form
+    # prose as code. ``parse_structured`` is the ONLY decoder used on the
+    # governed public path: it accepts exactly one deterministic encoding of
+    # the SAME canonical ``PatchProposal`` contract and nothing else.
+
+    def parse_structured(self, stdout: str) -> PatchProposal:
+        """Decode the canonical structured proposal encoding.
+
+        Returns a canonical :class:`PatchProposal`. On any deviation from the
+        encoding the returned proposal has ``valid=False`` and a deterministic
+        ``parse_error``; it is never partially applied.
+
+        RQ4-R2-C2 strictness: ``stdout.strip()`` must equal exactly one
+        complete framed proposal. Any leading/trailing prose, multiple
+        proposal blocks, or extra content is rejected. Whitespace-only
+        framing around the proposal is allowed (it is stripped before the
+        equality check). Codex must comply with the contract; the decoder
+        does NOT loosen the contract to accommodate model verbosity.
+        """
+        raw_sha = hashlib.sha256((stdout or '').encode('utf-8')).hexdigest()
+
+        def invalid(error: str) -> PatchProposal:
+            return PatchProposal(
+                valid=False, paths=[], hunks=[], old_lines=[], new_lines=[],
+                sha256='', raw_input_sha256=raw_sha, canonical_patch_sha256='',
+                parse_error=error,
+            )
+
+        if not stdout or not stdout.strip():
+            return invalid('Empty stdout')
+
+        stripped = stdout.strip()
+        begin_idx = stripped.find(PROPOSAL_BEGIN)
+        if begin_idx < 0:
+            return invalid('Missing structured proposal begin marker')
+        if stripped.find(PROPOSAL_BEGIN, begin_idx + 1) >= 0:
+            return invalid('Multiple structured proposal begin markers')
+        end_idx = stripped.find(PROPOSAL_END, begin_idx + len(PROPOSAL_BEGIN))
+        if end_idx < 0:
+            return invalid('Missing structured proposal end marker')
+        if stripped.find(PROPOSAL_END, end_idx + len(PROPOSAL_END)) >= 0:
+            return invalid('Multiple structured proposal end markers')
+        prefix = stripped[:begin_idx]
+        suffix = stripped[end_idx + len(PROPOSAL_END):]
+        if prefix.strip() != '':
+            return invalid('Leading prose before structured proposal')
+        if suffix.strip() != '':
+            return invalid('Trailing prose after structured proposal')
+
+        body = stripped[begin_idx + len(PROPOSAL_BEGIN):end_idx]
+
+        hunks: list[PatchHunk] = []
+        seen_paths: set[str] = set()
+        current_path: str | None = None
+        old_lines: list[str] = []
+        new_lines: list[str] = []
+        state: str | None = None  # None | 'OLD' | 'NEW'
+
+        def close_hunk() -> str | None:
+            if current_path is None:
+                return None
+            old_text = '\n'.join(old_lines)
+            new_text = '\n'.join(new_lines)
+            if not old_text.strip():
+                return f'empty OLD block for {current_path}'
+            if not new_text.strip():
+                return f'empty NEW block for {current_path}'
+            if old_text == new_text:
+                return f'OLD equals NEW for {current_path}'
+            hunks.append(
+                PatchHunk(
+                    file_path=current_path,
+                    old_lines=[old_text],
+                    new_lines=[new_text],
+                )
+            )
+            return None
+
+        for line in body.splitlines():
+            stripped = line.strip()
+            if stripped.startswith('FILE:'):
+                if state is not None:
+                    return invalid('FILE marker inside an OLD/NEW block')
+                error = close_hunk()
+                if error is not None:
+                    return invalid(error)
+                path_value = stripped[len('FILE:'):].strip()
+                if not path_value:
+                    return invalid('FILE marker with empty path')
+                if path_value in seen_paths:
+                    return invalid(f'duplicate FILE section: {path_value}')
+                seen_paths.add(path_value)
+                current_path = path_value
+                old_lines = []
+                new_lines = []
+                continue
+            if stripped == '<<<< OLD':
+                if current_path is None:
+                    return invalid('OLD block before any FILE marker')
+                if state is not None:
+                    return invalid('nested OLD/NEW block')
+                state = 'OLD'
+                continue
+            if stripped == '>>>> OLD':
+                if state != 'OLD':
+                    return invalid('unmatched OLD terminator')
+                state = None
+                continue
+            if stripped == '<<<< NEW':
+                if current_path is None:
+                    return invalid('NEW block before any FILE marker')
+                if state is not None:
+                    return invalid('nested OLD/NEW block')
+                if not old_lines:
+                    return invalid(f'NEW block before OLD block for {current_path}')
+                state = 'NEW'
+                continue
+            if stripped == '>>>> NEW':
+                if state != 'NEW':
+                    return invalid('unmatched NEW terminator')
+                state = None
+                continue
+            if stripped in ('<<<<<<<<', '>>>>>>>>'):
+                return invalid(f'conflict marker in proposal: {stripped}')
+            if state == 'OLD':
+                old_lines.append(line)
+            elif state == 'NEW':
+                new_lines.append(line)
+            elif stripped:
+                return invalid(f'unrecognized line outside OLD/NEW: {stripped!r}')
+
+        if state is not None:
+            return invalid('unterminated OLD/NEW block')
+        error = close_hunk()
+        if error is not None:
+            return invalid(error)
+        if not hunks:
+            return invalid('structured proposal declares no FILE sections')
+
+        paths = [h.file_path for h in hunks]
+        old_blocks = [h.old_lines[0] for h in hunks]
+        new_blocks = [h.new_lines[0] for h in hunks]
+        canonical = _canonical_patch_bytes(paths, old_blocks, new_blocks)
+        proposal_sha = hashlib.sha256(canonical).hexdigest()
+        return PatchProposal(
+            valid=True, paths=paths, hunks=hunks,
+            old_lines=old_blocks, new_lines=new_blocks,
+            sha256=proposal_sha, raw_input_sha256=raw_sha,
+            canonical_patch_sha256=proposal_sha,
         )
 
     def _parse_unified_diff(self, stdout: str, raw_sha: str) -> PatchProposal:
@@ -257,6 +415,94 @@ class PatchProposalParser:
 
 # ---- MutationAdmissionGate ----
 
+class RedQualificationDerivationError(ValueError):
+    """Raised when RED qualification cannot be derived from an evidence
+    artifact (missing file, malformed JSON, or non-conforming payload)."""
+
+
+def derive_red_qualification_from_evidence(red_qualification_ref: str) -> bool:
+    """Derive the boolean ``red_qualified`` flag from the actual RED
+    evidence artifact identified by ``red_qualification_ref``.
+
+    RQ4-R2-C2-R1 Repair A: the positive proof must not pass
+    ``red_qualified=True`` literally. The Harness must READ the actual
+    ``red/result.json`` (or equivalent) and compute the boolean from its
+    deterministic contents.
+
+    Required derivation (per Owner ruling):
+
+        red_qualified = (
+            red_result["exit_code"] == 1
+            and red_result["failure_reason_matches_intended_defect"] is True
+        )
+
+    The function does not interpret prose. It only inspects the
+    deterministic JSON fields. Any deviation raises
+    :class:`RedQualificationDerivationError` rather than silently
+    returning ``True``.
+
+    Parameters
+    ----------
+    red_qualification_ref:
+        Filesystem path to the RED evidence JSON. May be a relative
+        path; resolved against the current working directory.
+
+    Returns
+    -------
+    bool
+        True iff the artifact proves pytest exit-code 1 AND the intended
+        defect signature was matched.
+    """
+    if not isinstance(red_qualification_ref, str) or not red_qualification_ref.strip():
+        raise RedQualificationDerivationError(
+            f"red_qualification_ref must be a non-empty path string; "
+            f"got {red_qualification_ref!r}"
+        )
+
+    path = Path(red_qualification_ref)
+    if not path.is_file():
+        raise RedQualificationDerivationError(
+            f"RED evidence artifact not found: {red_qualification_ref}"
+        )
+
+    import json as _json
+    try:
+        payload = _json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, _json.JSONDecodeError) as exc:
+        raise RedQualificationDerivationError(
+            f"RED evidence artifact unreadable / not JSON: "
+            f"{red_qualification_ref}: {exc}"
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise RedQualificationDerivationError(
+            f"RED evidence artifact must be a JSON object; "
+            f"got {type(payload).__name__}"
+        )
+
+    try:
+        exit_code = payload["exit_code"]
+        matches = payload["failure_reason_matches_intended_defect"]
+    except KeyError as exc:
+        raise RedQualificationDerivationError(
+            f"RED evidence artifact missing required field {exc}: "
+            f"{red_qualification_ref}"
+        ) from exc
+
+    if not isinstance(exit_code, int):
+        raise RedQualificationDerivationError(
+            f"RED evidence artifact exit_code must be int; "
+            f"got {type(exit_code).__name__}"
+        )
+    if not isinstance(matches, bool):
+        raise RedQualificationDerivationError(
+            f"RED evidence artifact failure_reason_matches_intended_defect "
+            f"must be bool; got {type(matches).__name__}"
+        )
+
+    return exit_code == 1 and matches is True
+
+
 @dataclass
 class AdmissionReceipt:
     """Receipt from MutationAdmissionGate."""
@@ -328,8 +574,20 @@ class PathGateReceipt:
 class ExactPathMutationGate:
     """Validates patch proposal paths against allowed paths.
 
-    Only issues apply authority when proposal paths exactly match allowed paths.
-    FC6: includes proposal SHA, source revision, and admission receipt binding.
+    Issues apply authority only when the proposal paths are a NON-EMPTY
+    SUBSET of the allowed paths.
+
+    RQ4-R2 §12 contract-semantics decision
+    --------------------------------------
+    This gate previously used set **equality**. That is inconsistent with the
+    canonical contract: the canonical verification gate
+    (:class:`~synapx_harness.kernel.mutation_qualification_port.MutationQualificationPort`
+    check "exact_write_path") already applies **subset** semantics
+    (``actual.issubset(authorized)``). Under equality a legitimate proposal
+    that touches only one of two declared paths would be denied, while the
+    verifier would have accepted it. The canonical contract therefore
+    requires subset, and the gate is repaired accordingly. An empty proposal
+    path set is still denied.
     """
 
     def check(
@@ -339,11 +597,11 @@ class ExactPathMutationGate:
         source_revision: str,
         admission_receipt_id: str,
     ) -> PathGateReceipt:
-        """Validate proposal paths against allowlist."""
+        """Validate proposal paths against allowlist (subset semantics)."""
         proposal_set = set(proposal.paths)
         allowed_set = set(allowed_write_paths)
 
-        if proposal_set == allowed_set:
+        if proposal_set and proposal_set.issubset(allowed_set):
             return PathGateReceipt(
                 gate_decision='ALLOW',
                 apply_authority='ISSUED',
@@ -386,156 +644,159 @@ class ApplyReceipt:
     admission_receipt_id: str
     path_gate_receipt_id: str
     source_revision: str
+    denied_reason: str | None = None
 
 
 class ControlledPatchApplicator:
-    """Applies validated patch to target files (FC6 enhanced).
+    """Applies a validated single-file mutation with full authority chain.
 
-    Validates full authority chain before applying:
-    - Admission == ALLOW
-    - PathGate == ALLOW
-    - apply_authority == ISSUED
-    - proposal.paths == PathGate.authorized_paths
-    - proposal.sha256 == PathGate.patch_sha256
-    - source_revision == Admission.source_revision
-    - actual before hash == expected_before_sha256
+    RQ4-R2-C2 single-file first-slice contract:
 
-    If any check fails, write_count = 0.
+    * the proposal declares exactly one path;
+    * the proposal path equals an authorized path;
+    * the proposal path resolves inside the supplied ``repository_root``;
+    * the proposal SHA equals the path-gate SHA;
+    * the path-gate source revision equals the admission source revision
+      AND equals the ``current_source_revision_at_apply`` supplied by the
+      composition layer (which computed it from disk just-in-time);
+    * the current SHA of the target file equals the Harness-captured
+      ``expected_before_sha256`` (per-path binding);
+    * the proposal's ``OLD`` block occurs exactly once in the current
+      target bytes.
+
+    If ANY precondition fails, ``write_count == 0``, ``applied_paths`` is
+    empty, and the target bytes are not modified.
     """
 
     def apply(
         self,
-        target_file: Path,
         proposal: PatchProposal,
         path_gate_receipt: PathGateReceipt,
         admission_receipt: AdmissionReceipt,
-        expected_before_sha256: str,
+        *,
+        repository_root: Path,
+        expected_before_sha256_by_path: dict[str, str],
+        current_source_revision_at_apply: str,
         normalize_line_endings: bool = True,
     ) -> ApplyReceipt:
-        """Apply the validated patch with full authority chain validation."""
+        """Apply the validated single-file mutation.
+
+        All preconditions are evaluated BEFORE any byte is written. On
+        failure the function returns an empty ``ApplyReceipt`` without
+        touching the target file.
+        """
         apply_started = _now_iso()
 
+        def empty(reason: str) -> ApplyReceipt:
+            return self._empty_receipt(
+                authorization_ref=admission_receipt.receipt_id,
+                admission_receipt_id=admission_receipt.receipt_id,
+                path_gate_receipt_id=path_gate_receipt.admission_receipt_id,
+                source_revision=admission_receipt.source_revision,
+                apply_started=apply_started,
+                reason=reason,
+            )
+
         # ---- Authority chain validation ----
-        # Check admission
         if admission_receipt.admission_decision != 'ALLOW':
-            return self._empty_receipt(
-                authorization_ref=admission_receipt.receipt_id,
-                admission_receipt_id=admission_receipt.receipt_id,
-                path_gate_receipt_id='',
-                source_revision=admission_receipt.source_revision,
-                apply_started=apply_started,
-                reason='Admission DENIED',
-            )
-
-        # Check path gate
+            return empty('Admission DENIED')
         if path_gate_receipt.gate_decision != 'ALLOW':
-            return self._empty_receipt(
-                authorization_ref=admission_receipt.receipt_id,
-                admission_receipt_id=admission_receipt.receipt_id,
-                path_gate_receipt_id=path_gate_receipt.admission_receipt_id,
-                source_revision=admission_receipt.source_revision,
-                apply_started=apply_started,
-                reason='PathGate DENIED',
-            )
-
-        # Check apply authority
+            return empty('PathGate DENIED')
         if path_gate_receipt.apply_authority != 'ISSUED':
-            return self._empty_receipt(
-                authorization_ref=admission_receipt.receipt_id,
-                admission_receipt_id=admission_receipt.receipt_id,
-                path_gate_receipt_id=path_gate_receipt.admission_receipt_id,
-                source_revision=admission_receipt.source_revision,
-                apply_started=apply_started,
-                reason='Apply authority NOT ISSUED',
+            return empty('Apply authority NOT ISSUED')
+
+        if not proposal.paths:
+            return empty('Proposal declares no paths')
+        if len(proposal.paths) != 1:
+            return empty(
+                f'Single-file apply requires exactly 1 proposal path; '
+                f'got {len(proposal.paths)}'
             )
 
-        # Check proposal paths == authorized paths
-        if set(proposal.paths) != set(path_gate_receipt.authorized_paths):
-            return self._empty_receipt(
-                authorization_ref=admission_receipt.receipt_id,
-                admission_receipt_id=admission_receipt.receipt_id,
-                path_gate_receipt_id=path_gate_receipt.admission_receipt_id,
-                source_revision=admission_receipt.source_revision,
-                apply_started=apply_started,
-                reason='Proposal paths != authorized paths',
+        target_path = proposal.paths[0]
+        authorized_set = set(path_gate_receipt.authorized_paths)
+        if target_path not in authorized_set:
+            return empty(
+                f'Target path {target_path!r} not in authorized set '
+                f'{sorted(authorized_set)}'
             )
 
-        # Check proposal SHA == path gate SHA
         if proposal.sha256 != path_gate_receipt.proposal_sha256:
-            return self._empty_receipt(
-                authorization_ref=admission_receipt.receipt_id,
-                admission_receipt_id=admission_receipt.receipt_id,
-                path_gate_receipt_id=path_gate_receipt.admission_receipt_id,
-                source_revision=admission_receipt.source_revision,
-                apply_started=apply_started,
-                reason='Proposal SHA mismatch',
-            )
+            return empty('Proposal SHA mismatch with PathGate')
+        if (
+            proposal.canonical_patch_sha256
+            != path_gate_receipt.canonical_patch_sha256
+        ):
+            return empty('Canonical patch SHA mismatch with PathGate')
 
-        # Check source revision
         if admission_receipt.source_revision != path_gate_receipt.source_revision:
-            return self._empty_receipt(
-                authorization_ref=admission_receipt.receipt_id,
-                admission_receipt_id=admission_receipt.receipt_id,
-                path_gate_receipt_id=path_gate_receipt.admission_receipt_id,
-                source_revision=admission_receipt.source_revision,
-                apply_started=apply_started,
-                reason='Source revision mismatch',
+            return empty('Admission/PathGate source revision mismatch')
+        if admission_receipt.source_revision != current_source_revision_at_apply:
+            return empty(
+                'Current source revision at apply != admitted source revision'
             )
 
-        # ---- Apply the patch ----
-        before_bytes = target_file.read_bytes()
+        # ---- Resolve target under explicit repository_root ----
+        root_resolved = repository_root.resolve()
+        target_candidate = (root_resolved / target_path).resolve()
+        try:
+            target_candidate.relative_to(root_resolved)
+        except ValueError:
+            return empty(f'Target path escapes repository root: {target_path}')
+
+        if not target_candidate.is_file():
+            return empty(f'Target path is not an existing file: {target_path}')
+
+        # ---- Per-path before-hash binding ----
+        expected_before = expected_before_sha256_by_path.get(target_path)
+        if expected_before is None:
+            return empty(
+                f'expected_before_sha256_by_path has no entry for '
+                f'{target_path}'
+            )
+
+        before_bytes = target_candidate.read_bytes()
+        if normalize_line_endings:
+            before_bytes = before_bytes.replace(b'\r\n', b'\n')
         before_sha = hashlib.sha256(before_bytes).hexdigest()
-
-        # Check expected before hash
-        if before_sha != expected_before_sha256:
-            return self._empty_receipt(
-                authorization_ref=admission_receipt.receipt_id,
-                admission_receipt_id=admission_receipt.receipt_id,
-                path_gate_receipt_id=path_gate_receipt.admission_receipt_id,
-                source_revision=admission_receipt.source_revision,
-                apply_started=apply_started,
-                reason=(
-                    f'Before hash mismatch: expected '
-                    f'{expected_before_sha256[:12]}..., got {before_sha[:12]}...'
-                ),
+        if before_sha != expected_before:
+            return empty(
+                f'Before-hash mismatch for {target_path}: '
+                f'expected={expected_before[:12]}... actual={before_sha[:12]}...'
             )
 
-        # Get old/new content from proposal
-        old_content = proposal.old_lines[0] if proposal.old_lines else ''
-        new_content = proposal.new_lines[0] if proposal.new_lines else ''
-
-        old_bytes = old_content.encode('utf-8')
-        new_bytes = new_content.encode('utf-8')
-
-        if old_bytes not in before_bytes:
-            return self._empty_receipt(
-                authorization_ref=admission_receipt.receipt_id,
-                admission_receipt_id=admission_receipt.receipt_id,
-                path_gate_receipt_id=path_gate_receipt.admission_receipt_id,
-                source_revision=admission_receipt.source_revision,
-                apply_started=apply_started,
-                reason='Old content not found in target file',
+        # ---- OLD block must occur exactly once ----
+        if not proposal.old_lines:
+            return empty('Proposal has no OLD block')
+        if not proposal.new_lines:
+            return empty('Proposal has no NEW block')
+        old_text = proposal.old_lines[0]
+        new_text = proposal.new_lines[0]
+        old_bytes = old_text.encode('utf-8')
+        new_bytes = new_text.encode('utf-8')
+        if not old_bytes:
+            return empty('Empty OLD block')
+        if not new_bytes:
+            return empty('Empty NEW block')
+        if old_bytes == new_bytes:
+            return empty('OLD equals NEW')
+        occurrences = before_bytes.count(old_bytes)
+        if occurrences != 1:
+            return empty(
+                f'OLD block must occur exactly once in current bytes; '
+                f'got {occurrences}'
             )
 
-        # Apply the change
+        # ---- Apply ----
         after_bytes = before_bytes.replace(old_bytes, new_bytes)
-
-        # Normalize line endings if needed
         if normalize_line_endings and b'\r\n' in after_bytes:
             after_bytes = after_bytes.replace(b'\r\n', b'\n')
-
-        # Write after state
-        target_file.write_bytes(after_bytes)
-
+        target_candidate.write_bytes(after_bytes)
         after_sha = hashlib.sha256(after_bytes).hexdigest()
         apply_completed = _now_iso()
 
-        repo_root_for_relative = target_file.parent.parent.parent.parent
-        applied_path = str(target_file.relative_to(repo_root_for_relative)).replace(
-            '\\', '/'
-        )
         return ApplyReceipt(
-            applied_paths=[applied_path],
+            applied_paths=[target_path],
             before_sha256=before_sha,
             after_sha256=after_sha,
             patch_sha256=proposal.sha256,
@@ -572,6 +833,7 @@ class ControlledPatchApplicator:
             admission_receipt_id=admission_receipt_id,
             path_gate_receipt_id=path_gate_receipt_id,
             source_revision=source_revision,
+            denied_reason=reason,
         )
 
 
@@ -586,21 +848,24 @@ class MutationExecutionResult:
     path_gate_receipt: PathGateReceipt | None
     apply_receipt: ApplyReceipt | None
     proposal: PatchProposal | None
+    validation_blockers: list[str]
     error: str | None = None
 
 
 class GovernedMutationExecutor:
     """Orchestrates the full mutation chain with fail-closed semantics.
 
-    Invariant:
+    Invariant (RQ4-R2-C2 strict):
     RED Qualification
     -> MutationAdmissionGate ALLOW
-    -> CodexAdapter read-only
-    -> PatchProposalParser
+    -> CodexAdapter read-only (outside this class)
+    -> PatchProposalParser.parse_structured() (NOT legacy heuristic parse)
+    -> validate_mutation_proposal (deterministic validation)
     -> ExactPathMutationGate ALLOW
-    -> ControlledPatchApplicator
+    -> ControlledPatchApplicator (single-file, all preconditions first)
 
-    If any step fails, applicator is not reached.
+    If any step fails, the applicator is not reached and the target file
+    is not modified.
     """
 
     def __init__(
@@ -623,12 +888,55 @@ class GovernedMutationExecutor:
         source_revision: str,
         execution_identity: dict[str, Any],
         allowed_write_paths: list[str],
-        target_file: Path,
-        expected_before_sha256: str,
+        *,
+        repository_root: Path,
+        expected_before_sha256_by_path: dict[str, str],
+        current_source_revision_at_apply: str,
         agent_stdout: str,
     ) -> MutationExecutionResult:
-        """Execute the full mutation chain."""
-        # Step 1: Admission
+        """Execute the full mutation chain (RQ4-R2-C2 strict, single-file)."""
+        # Step 1: STRICT parse (NOT legacy heuristic). Parse must precede
+        # admission: an invalid proposal must never produce an admission
+        # receipt.
+        proposal = self._parser.parse_structured(agent_stdout)
+        if not proposal.valid:
+            return MutationExecutionResult(
+                success=False,
+                work_contract_id=work_contract_id,
+                admission_receipt=None,
+                path_gate_receipt=None,
+                apply_receipt=None,
+                proposal=proposal,
+                validation_blockers=[],
+                error=f'Proposal INVALID: {proposal.parse_error}',
+            )
+
+        # Step 2: Deterministic proposal validation. Validation must precede
+        # admission: an unauthorized proposal must never produce an
+        # admission receipt.
+        from synapx_harness.kernel.mutation_proposal_contract import (
+            validate_mutation_proposal,
+        )
+        blockers = validate_mutation_proposal(
+            proposal,
+            repository_root=repository_root,
+            allowed_write_paths=allowed_write_paths,
+            expected_before_sha256_by_path=expected_before_sha256_by_path,
+        )
+        if blockers:
+            return MutationExecutionResult(
+                success=False,
+                work_contract_id=work_contract_id,
+                admission_receipt=None,
+                path_gate_receipt=None,
+                apply_receipt=None,
+                proposal=proposal,
+                validation_blockers=blockers,
+                error='Proposal validation FAILED: ' + '; '.join(blockers),
+            )
+
+        # Step 3: Admission. Only after the proposal is structurally and
+        # semantically valid may an admission receipt be issued.
         admission = self._admission_gate.admit(
             work_contract_id=work_contract_id,
             red_qualified=red_qualified,
@@ -645,24 +953,12 @@ class GovernedMutationExecutor:
                 admission_receipt=admission,
                 path_gate_receipt=None,
                 apply_receipt=None,
-                proposal=None,
+                proposal=proposal,
+                validation_blockers=[],
                 error=f'Admission DENIED: {admission.denied_reason}',
             )
 
-        # Step 2: Parse proposal
-        proposal = self._parser.parse(agent_stdout)
-        if not proposal.valid:
-            return MutationExecutionResult(
-                success=False,
-                work_contract_id=work_contract_id,
-                admission_receipt=admission,
-                path_gate_receipt=None,
-                apply_receipt=None,
-                proposal=proposal,
-                error=f'Proposal INVALID: {proposal.parse_error}',
-            )
-
-        # Step 3: Path gate
+        # Step 4: PathGate
         path_gate = self._path_gate.check(
             proposal=proposal,
             allowed_write_paths=allowed_write_paths,
@@ -678,16 +974,18 @@ class GovernedMutationExecutor:
                 path_gate_receipt=path_gate,
                 apply_receipt=None,
                 proposal=proposal,
+                validation_blockers=[],
                 error=f'PathGate DENIED: {path_gate.reason}',
             )
 
-        # Step 4: Apply
+        # Step 5: Apply (single-file, all preconditions first)
         apply_receipt = self._applicator.apply(
-            target_file=target_file,
             proposal=proposal,
             path_gate_receipt=path_gate,
             admission_receipt=admission,
-            expected_before_sha256=expected_before_sha256,
+            repository_root=repository_root,
+            expected_before_sha256_by_path=expected_before_sha256_by_path,
+            current_source_revision_at_apply=current_source_revision_at_apply,
         )
 
         if apply_receipt.write_count == 0:
@@ -698,7 +996,8 @@ class GovernedMutationExecutor:
                 path_gate_receipt=path_gate,
                 apply_receipt=apply_receipt,
                 proposal=proposal,
-                error='Apply failed: write_count = 0',
+                validation_blockers=[],
+                error=f'Apply failed: write_count = 0 ({apply_receipt.denied_reason})',
             )
 
         return MutationExecutionResult(
@@ -708,6 +1007,7 @@ class GovernedMutationExecutor:
             path_gate_receipt=path_gate,
             apply_receipt=apply_receipt,
             proposal=proposal,
+            validation_blockers=[],
         )
 
 
@@ -717,4 +1017,6 @@ __all__ = [
     'ExactPathMutationGate', 'PathGateReceipt',
     'ControlledPatchApplicator', 'ApplyReceipt',
     'GovernedMutationExecutor', 'MutationExecutionResult',
+    'RedQualificationDerivationError',
+    'derive_red_qualification_from_evidence',
 ]
