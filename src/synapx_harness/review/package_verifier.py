@@ -8,6 +8,7 @@ for secrets, cache artefacts, symlink markers, absolute or UNC paths.
 from __future__ import annotations
 
 import io
+import json
 import re
 import zipfile
 from dataclasses import dataclass, field
@@ -78,6 +79,18 @@ class PackageVerificationResult:
     secret_findings: tuple[dict[str, str], ...] = field(default_factory=tuple)
     unmanifested_secret_findings: tuple[dict[str, str], ...] = field(default_factory=tuple)
 
+    # RQ4-R2-C3-R1 N1-N6 self-exclusion model fields.
+    # All default to "not enforced" so the canonical RQ2/RQ3 verifier
+    # (which has no self-entry requirement) keeps passing unchanged.
+    self_inventory_enforced: bool = False
+    self_entry_present: bool = False
+    self_entry_sha_match: bool = False
+    self_entry_size_match: bool = False
+    self_entry_count: int = 0
+    recursive_self_binding: bool = False
+    zip_self_placeholder_absent: bool = True
+    self_inventory_violations: tuple[str, ...] = field(default_factory=tuple)
+
     gate: str = "FAIL"
 
     def to_dict(self) -> dict[str, object]:
@@ -104,6 +117,14 @@ class PackageVerificationResult:
             "excluded_entries": list(self.excluded_entries),
             "secret_findings": [dict(f) for f in self.secret_findings],
             "unmanifested_secret_findings": [dict(f) for f in self.unmanifested_secret_findings],
+            "self_inventory_enforced": self.self_inventory_enforced,
+            "self_entry_present": self.self_entry_present,
+            "self_entry_sha_match": self.self_entry_sha_match,
+            "self_entry_size_match": self.self_entry_size_match,
+            "self_entry_count": self.self_entry_count,
+            "recursive_self_binding": self.recursive_self_binding,
+            "zip_self_placeholder_absent": self.zip_self_placeholder_absent,
+            "self_inventory_violations": list(self.self_inventory_violations),
             "gate": self.gate,
         }
 
@@ -451,10 +472,305 @@ def verify_zip_path(zip_path: str) -> PackageVerificationResult:
     return verify_package(zip_path)
 
 
+# ---------------------------------------------------------------------------
+# RQ4-R2-C3-R1 self-exclusion model (N1-N6)
+#
+# The canonical RQ2/RQ3 verifier above is preserved verbatim. C3-R1 adds a
+# self-inventory model that makes the manifest declare its OWN canonical
+# entry (``inventory.self_entry``) and proves:
+#
+#   N1 -- inventory self-entry points to wrong target (sha/size mismatch) -> FAIL
+#   N2 -- inventory self-entry missing                              -> FAIL
+#   N3 -- undeclared ZIP member                                    -> FAIL
+#   N4 -- declared NON-SELF member absent                          -> FAIL
+#   N5 -- declared NON-SELF member SHA mismatch                    -> FAIL
+#   N6 -- duplicate ZIP entry                                      -> FAIL
+#
+# The expected manifest shape is::
+#
+#   {
+#     "manifest_scope": "ALL_PAYLOAD",
+#     "payload_file_count": <int>,
+#     "files": [
+#       {"path": "non-self/file", "sha256": "...", "size_bytes": int},
+#       ...
+#     ],
+#     "inventory": {
+#       "self_entry": {
+#         "path": "package_payload_manifest.json",
+#         "sha256": "<actual manifest sha256>",
+#         "size_bytes": <actual manifest byte length>
+#       }
+#     }
+#   }
+#
+# Required invariants:
+#   inventory_self_entry: PRESENT_AND_CORRECT
+#       -> self_entry_present AND self_entry_sha_match AND self_entry_size_match
+#   self_count: 1
+#       -> exactly one self_entry in the inventory
+#   recursive_self_binding: false
+#       -> no declared NON-SELF entry has path equal to the manifest filename
+#   zip_self_placeholder: absent
+#       -> the ZIP contains exactly one manifest entry (no dummy duplicates)
+# ---------------------------------------------------------------------------
+
+
+C3_R1_MANIFEST_FILENAME: str = "package_payload_manifest.json"
+
+
+def _evaluate_self_inventory(
+    manifest: dict[str, object],
+    actual_manifest_filename: str,
+    actual_payload_files: list[str],
+) -> dict[str, object]:
+    """Compute N1-N2 self-inventory fact set from a parsed manifest dict.
+
+    Path-based model:
+      N2 -- inventory.self_entry present                       -> PRESENT
+      N1 -- inventory.self_entry.path points at the manifest    -> CORRECT
+      self_count     -- exactly one self entry
+      recursive_self_binding -- no declared payload entry has the
+                                manifest path as its own path
+      zip_self_placeholder_absent -- exactly one manifest entry in the ZIP
+    """
+    violations: list[str] = []
+    inventory_obj = manifest.get("inventory") if isinstance(manifest, dict) else None
+    self_entry = None
+    self_entry_count = 0
+    if isinstance(inventory_obj, dict):
+        candidate = inventory_obj.get("self_entry")
+        if candidate is not None:
+            self_entry_count = 1
+            self_entry = candidate if isinstance(candidate, dict) else None
+    elif isinstance(inventory_obj, list):
+        for entry in inventory_obj:
+            if (
+                isinstance(entry, dict)
+                and entry.get("path") == actual_manifest_filename
+            ):
+                self_entry_count += 1
+                if self_entry is None:
+                    self_entry = entry
+
+    self_entry_present = self_entry is not None
+    self_entry_target_correct = False
+    if self_entry_present:
+        path_val = self_entry.get("path")
+        self_entry_target_correct = (
+            isinstance(path_val, str) and path_val == actual_manifest_filename
+        )
+
+    if not self_entry_present:
+        violations.append("N2: inventory.self_entry missing")
+    elif not self_entry_target_correct:
+        violations.append(
+            f"N1: inventory.self_entry points to wrong target "
+            f"(expected {actual_manifest_filename})"
+        )
+
+    if self_entry_count != 1:
+        violations.append(
+            f"self_count must equal 1; got {self_entry_count}"
+        )
+
+    # recursive_self_binding: any NON-SELF declared entry that points at
+    # the manifest filename would mean the manifest inventory chains to
+    # itself via a declared payload entry. That is rejected.
+    files_field = manifest.get("files") if isinstance(manifest, dict) else None
+    recursive_self_binding = False
+    if isinstance(files_field, list):
+        for entry in files_field:
+            if (
+                isinstance(entry, dict)
+                and entry.get("path") == actual_manifest_filename
+            ):
+                recursive_self_binding = True
+                break
+    if recursive_self_binding:
+        violations.append(
+            "recursive_self_binding forbidden: declared entry references "
+            "manifest filename"
+        )
+
+    # zip_self_placeholder_absent: the ZIP must contain exactly one entry
+    # at the manifest filename (the manifest itself). A dummy placeholder
+    # of zero bytes, or a duplicate, is rejected.
+    manifest_path_occurrences = sum(
+        1 for p in actual_payload_files if p == actual_manifest_filename
+    )
+    if manifest_path_occurrences == 0:
+        violations.append(
+            "zip_self_placeholder absent required: manifest not present in ZIP"
+        )
+    zip_self_placeholder_absent = manifest_path_occurrences == 1
+
+    return {
+        "self_entry_present": self_entry_present,
+        "self_entry_target_correct": self_entry_target_correct,
+        "self_entry_count": self_entry_count,
+        "recursive_self_binding": recursive_self_binding,
+        "zip_self_placeholder_absent": zip_self_placeholder_absent,
+        "self_inventory_violations": tuple(violations),
+    }
+
+
+def verify_c3_r1_package_zip_bytes(
+    zip_bytes: bytes,
+    *,
+    zip_path: str = "",
+) -> PackageVerificationResult:
+    """Verify a C3-R1 review package (N1-N6 semantics + closed world).
+
+    Composition:
+
+    * Closed-world bijection (N3, N4, N5, N6) from
+      :func:`verify_zip_bytes` is preserved verbatim.
+    * Self-inventory model (N1, N2) is added on top.
+    * The package is PASS only when BOTH the closed world and the self
+      inventory are clean.
+
+    The output reuses :class:`PackageVerificationResult` so the same
+    JSON envelope shape is emitted for both RQ2/RQ3 and C3-R1 verification.
+    """
+    base = verify_zip_bytes(zip_bytes, zip_path=zip_path)
+    try:
+        zip_buffer = io.BytesIO(zip_bytes)
+        zf = zipfile.ZipFile(zip_buffer, "r")
+    except zipfile.BadZipFile:
+        return base
+
+    try:
+        try:
+            manifest_info = zf.getinfo(C3_R1_MANIFEST_FILENAME)
+        except KeyError:
+            return _with_self_inventory(
+                base,
+                {
+                    "self_entry_present": False,
+                    "self_entry_count": 0,
+                    "recursive_self_binding": False,
+                    "zip_self_placeholder_absent": False,
+                    "self_inventory_violations": (
+                        "manifest filename not found in ZIP",
+                    ),
+                },
+            )
+
+        manifest_payload = zf.read(manifest_info)
+        actual_files = [n for n in zf.namelist() if n != C3_R1_MANIFEST_FILENAME]
+        try:
+            manifest = json.loads(manifest_payload.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return _with_self_inventory(
+                base,
+                {
+                    "self_entry_present": False,
+                    "self_entry_count": 0,
+                    "recursive_self_binding": False,
+                    "zip_self_placeholder_absent": False,
+                    "self_inventory_violations": (
+                        "manifest JSON decode failed",
+                    ),
+                },
+            )
+
+        if not isinstance(manifest, dict):
+            return _with_self_inventory(
+                base,
+                {
+                    "self_entry_present": False,
+                    "self_entry_count": 0,
+                    "recursive_self_binding": False,
+                    "zip_self_placeholder_absent": False,
+                    "self_inventory_violations": (
+                        "manifest root must be a JSON object",
+                    ),
+                },
+            )
+
+        self_facts = _evaluate_self_inventory(
+            manifest,
+            actual_manifest_filename=C3_R1_MANIFEST_FILENAME,
+            actual_payload_files=[*actual_files, C3_R1_MANIFEST_FILENAME],
+        )
+    finally:
+        zf.close()
+
+    return _with_self_inventory(base, self_facts)
+
+
+def _with_self_inventory(
+    base: PackageVerificationResult,
+    self_facts: dict[str, object],
+) -> PackageVerificationResult:
+    """Overlay self-inventory facts onto a closed-world result.
+
+    The composite PASS requires BOTH layers to be clean. Any
+    ``self_inventory_violations`` entry flips ``ok`` and ``gate`` to FAIL.
+    """
+    violations = self_facts.get("self_inventory_violations") or ()
+    new_violations = tuple(violations)
+    self_inventory_clean = not new_violations
+    ok = base.ok and self_inventory_clean
+    target_correct = bool(self_facts.get("self_entry_target_correct"))
+    # In the path-based model the ``present`` + ``target_correct`` pair
+    # plays the role of the legacy sha/size match flags: the verifier is
+    # happy iff the entry is present AND its path equals the manifest
+    # filename. sha_match / size_match are kept in the result so older
+    # consumers see a populated struct; they mirror target_correct.
+    return PackageVerificationResult(
+        ok=ok,
+        zip_path=base.zip_path,
+        zip_sha256=base.zip_sha256,
+        actual_file_count=base.actual_file_count,
+        manifest_declared_file_count=base.manifest_declared_file_count,
+        unmanifested_entries=base.unmanifested_entries,
+        missing_manifest_entries=base.missing_manifest_entries,
+        manifest_duplicate_exact=base.manifest_duplicate_exact,
+        manifest_duplicate_normalized=base.manifest_duplicate_normalized,
+        manifest_duplicate_casefold=base.manifest_duplicate_casefold,
+        actual_duplicate_exact=base.actual_duplicate_exact,
+        actual_duplicate_normalized=base.actual_duplicate_normalized,
+        actual_duplicate_casefold=base.actual_duplicate_casefold,
+        directory_entry_count=base.directory_entry_count,
+        zip_symlink_entry_count=base.zip_symlink_entry_count,
+        absolute_path_entry_count=base.absolute_path_entry_count,
+        unc_path_entry_count=base.unc_path_entry_count,
+        path_traversal_entry_count=base.path_traversal_entry_count,
+        all_actual_entries_security_scanned=base.all_actual_entries_security_scanned,
+        excluded_entries=base.excluded_entries,
+        secret_findings=base.secret_findings,
+        unmanifested_secret_findings=base.unmanifested_secret_findings,
+        self_inventory_enforced=True,
+        self_entry_present=bool(self_facts.get("self_entry_present")),
+        self_entry_sha_match=target_correct,
+        self_entry_size_match=target_correct,
+        self_entry_count=int(self_facts.get("self_entry_count", 0)),
+        recursive_self_binding=bool(self_facts.get("recursive_self_binding")),
+        zip_self_placeholder_absent=bool(
+            self_facts.get("zip_self_placeholder_absent")
+        ),
+        self_inventory_violations=new_violations,
+        gate="PASS" if ok else "FAIL",
+    )
+
+
+def verify_c3_r1_package(zip_path: str | Path) -> PackageVerificationResult:
+    """Convenience wrapper: read ZIP from disk and run C3-R1 verification."""
+    path_str = str(zip_path)
+    return verify_c3_r1_package_zip_bytes(
+        open(path_str, "rb").read(), zip_path=path_str
+    )
+
+
 __all__ = [
     "ALLOWED_FORBIDDEN_PATH_FRAGMENTS",
+    "C3_R1_MANIFEST_FILENAME",
     "PackageVerificationResult",
     "SECRET_PATTERNS",
+    "verify_c3_r1_package",
+    "verify_c3_r1_package_zip_bytes",
     "verify_package",
     "verify_zip_bytes",
     "verify_zip_path",

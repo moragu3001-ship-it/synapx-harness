@@ -272,6 +272,22 @@ def capture_before_state(
     )
 
 
+def _compute_agent_session_id() -> str:
+    """Allocate a fresh agent-session identifier.
+
+    RQ4-R2-C3-R1 (E4 hardening): the agent session is material and
+    independent of the harness-side ``job_id``. This makes the
+    agent-session lineage traceable even when the harness's job_id and
+    the agent's session identifier happen to collide in a reuse path.
+    """
+    return f"agent-{uuid.uuid4().hex}"
+
+
+def _sha256_text(text: str | None) -> str:
+    """Stable SHA-256 over a (possibly empty) text payload."""
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+
+
 def _fixture_root_sha(repository_root: Path) -> str:
     """Compute a deterministic snapshot hash of the fixture root.
 
@@ -333,13 +349,23 @@ def _fixture_root_sha(repository_root: Path) -> str:
 def _generate_execution_identity(
     repository_root: Path,
 ) -> ExecutionIdentity:
-    """Allocate a fresh canonical ExecutionIdentity for this run."""
-    session_id = f"sess-{uuid.uuid4().hex}"
+    """Allocate a fresh canonical ExecutionIdentity for this run.
+
+    RQ4-R2-C3-R1 (E4 hardening): every lineage slot is allocated from a
+    distinct ``uuid4`` so the canonical (job_id, root_task_id, task_id,
+    attempt_id) four-tuple is materially concrete. No two slots share a
+    value; the lineage survives verbatim into WorkContract -> AgentRequest
+    -> proposal -> mutation -> verification -> evidence -> terminal decision.
+    """
+    job_uuid = uuid.uuid4().hex
+    root_uuid = uuid.uuid4().hex
+    task_uuid = uuid.uuid4().hex
+    attempt_uuid = uuid.uuid4().hex
     return ExecutionIdentity(
-        job_id=session_id,
-        root_task_id=session_id,
-        task_id=f"task-{uuid.uuid4().hex}",
-        attempt_id=f"att-{uuid.uuid4().hex}",
+        job_id=f"job-{job_uuid}",
+        root_task_id=f"root-{root_uuid}",
+        task_id=f"task-{task_uuid}",
+        attempt_id=f"att-{attempt_uuid}",
         tool_call_id=None,
     )
 
@@ -428,6 +454,7 @@ def build_agent_request(
     model: str,
     timeout_seconds: int,
     canonical_context_ref: str | None = None,
+    agent_session_id: str | None = None,
 ) -> AgentRequest:
     """Build a canonical AgentRequest preserving the execution lineage."""
     if not task_instruction or not task_instruction.strip():
@@ -439,10 +466,14 @@ def build_agent_request(
             "allowed_write_paths must be a non-empty list (no semantic inference)"
         )
 
-    agent_session_id = execution_identity.job_id
+    effective_agent_session_id = (
+        agent_session_id
+        if agent_session_id is not None
+        else execution_identity.job_id
+    )
     agent_context = AgentExecutionContext(
         execution_identity=execution_identity,
-        agent_session_id=agent_session_id,
+        agent_session_id=effective_agent_session_id,
     )
     workspace = AgentWorkspace(
         root=str(Path(workspace_root).resolve()),
@@ -935,6 +966,13 @@ class GovernedExecutionResult:
     This is a presentation-friendly view object, NOT a terminal authority
     on its own. The terminal authority is the embedded
     ``terminal_decision`` (a :class:`TerminalDecisionRecord`).
+
+    RQ4-R2-C3-R1 lineage slots: ``pre_codex_source_revision`` (R0, captured
+    before Codex), ``pre_apply_source_revision`` (R0, re-captured at apply
+    time), ``post_apply_source_revision`` (R1, captured after Harness
+    write). The three values are required to be material, NOT placeholder
+    strings. ``work_contract_id`` and ``execution_identity`` survive the
+    run verbatim into the lineage.
     """
 
     success: bool
@@ -943,15 +981,23 @@ class GovernedExecutionResult:
     shared_understanding: SharedUnderstandingContext
     work_contract: WorkContract
     source_revision: str
-    allowed_write_paths: list[str]
-    proposal: PatchProposal | None
-    admission_receipt: AdmissionReceipt | None
-    path_gate_receipt: PathGateReceipt | None
-    apply_receipt: ApplyReceipt | None
-    verification: VerificationOutcome
-    sealed_evidence: dict[str, object]
-    terminal_decision: Any
-    terminalization_input: dict[str, object]
+    pre_codex_source_revision: str = ""
+    pre_apply_source_revision: str = ""
+    post_apply_source_revision: str = ""
+    agent_session_id: str = ""
+    codex_process_exit_code: int | None = None
+    codex_process_version: str | None = None
+    agent_stdout_sha256: str | None = None
+    agent_stderr_sha256: str | None = None
+    allowed_write_paths: list[str] = field(default_factory=list)
+    proposal: PatchProposal | None = None
+    admission_receipt: AdmissionReceipt | None = None
+    path_gate_receipt: PathGateReceipt | None = None
+    apply_receipt: ApplyReceipt | None = None
+    verification: VerificationOutcome | None = None
+    sealed_evidence: dict[str, object] = field(default_factory=dict)
+    terminal_decision: Any = None
+    terminalization_input: dict[str, object] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
@@ -962,6 +1008,14 @@ class GovernedExecutionResult:
             "shared_understanding": self.shared_understanding.model_dump(mode="json"),
             "work_contract": self.work_contract.model_dump(mode="json"),
             "source_revision": self.source_revision,
+            "pre_codex_source_revision": self.pre_codex_source_revision,
+            "pre_apply_source_revision": self.pre_apply_source_revision,
+            "post_apply_source_revision": self.post_apply_source_revision,
+            "agent_session_id": self.agent_session_id,
+            "codex_process_exit_code": self.codex_process_exit_code,
+            "codex_process_version": self.codex_process_version,
+            "agent_stdout_sha256": self.agent_stdout_sha256,
+            "agent_stderr_sha256": self.agent_stderr_sha256,
             "allowed_write_paths": list(self.allowed_write_paths),
             "proposal": (
                 None
@@ -971,6 +1025,7 @@ class GovernedExecutionResult:
                     "paths": list(self.proposal.paths),
                     "sha256": self.proposal.sha256,
                     "canonical_patch_sha256": self.proposal.canonical_patch_sha256,
+                    "raw_input_sha256": self.proposal.raw_input_sha256,
                 }
             ),
             "admission_receipt": (
@@ -980,6 +1035,7 @@ class GovernedExecutionResult:
                     "receipt_id": self.admission_receipt.receipt_id,
                     "admission_decision": self.admission_receipt.admission_decision,
                     "work_contract_id": self.admission_receipt.work_contract_id,
+                    "source_revision": self.admission_receipt.source_revision,
                 }
             ),
             "path_gate_receipt": (
@@ -989,6 +1045,7 @@ class GovernedExecutionResult:
                     "gate_decision": self.path_gate_receipt.gate_decision,
                     "apply_authority": self.path_gate_receipt.apply_authority,
                     "proposal_paths": list(self.path_gate_receipt.proposal_paths),
+                    "source_revision": self.path_gate_receipt.source_revision,
                 }
             ),
             "apply_receipt": (
@@ -999,9 +1056,16 @@ class GovernedExecutionResult:
                     "before_sha256": self.apply_receipt.before_sha256,
                     "after_sha256": self.apply_receipt.after_sha256,
                     "write_count": self.apply_receipt.write_count,
+                    "source_revision": self.apply_receipt.source_revision,
+                    "admission_receipt_id": self.apply_receipt.admission_receipt_id,
+                    "path_gate_receipt_id": self.apply_receipt.path_gate_receipt_id,
                 }
             ),
-            "verification": self.verification.to_dict(),
+            "verification": (
+                self.verification.to_dict()
+                if self.verification is not None
+                else {}
+            ),
             "sealed_evidence": self.sealed_evidence,
             "terminal_decision": (
                 self.terminal_decision.model_dump(mode="json")
@@ -1063,6 +1127,7 @@ def run_governed_execution(
         )
 
     execution_identity = _generate_execution_identity(workspace_root)
+    agent_session_id = _compute_agent_session_id()
     work_contract_id = (
         request.work_contract_id
         or f"wc-{execution_identity.root_task_id}"
@@ -1095,8 +1160,12 @@ def run_governed_execution(
             workspace_root=workspace_root,
             reason=str(exc),
             execution_identity=execution_identity,
+            agent_session_id=agent_session_id,
             work_contract_id=work_contract_id,
             shared_understanding=shared_understanding,
+            pre_codex_source_revision=before.source_revision
+            if "before" in locals()
+            else "",
         )
 
     work_contract = build_first_slice_work_contract(
@@ -1110,10 +1179,12 @@ def run_governed_execution(
 
     # ----- Codex process -----
     fixture_sha_before = before.fixture_sha_before_codex
+    pre_codex_source_revision = fixture_sha_before
+    agent_stderr_text: str = ""
 
     if request.codex_stdout_override is not None:
         agent_stdout = request.codex_stdout_override
-        codex_version = "test-override"
+        codex_version: str | None = "test-override"
         agent_result_status = "DONE"
         codex_process_exit_code = 0
     else:
@@ -1137,9 +1208,11 @@ def run_governed_execution(
             model=request.model,
             timeout_seconds=request.timeout_seconds,
             canonical_context_ref=shared_understanding.contract_type,
+            agent_session_id=agent_session_id,
         )
         agent_result = adapter.execute(agent_request)
         agent_stdout = agent_result.output.stdout
+        agent_stderr_text = agent_result.output.stderr or ""
         codex_version = agent_result.provider.version
         agent_result_status = agent_result.status.value
         codex_process_exit_code = (
@@ -1147,6 +1220,9 @@ def run_governed_execution(
             if agent_result.process is not None
             else -1
         )
+
+    agent_stdout_sha256 = _sha256_text(agent_stdout)
+    agent_stderr_sha256 = _sha256_text(agent_stderr_text)
 
     # ----- Codex read-only proof (RQ4 §14) -----
     try:
@@ -1157,9 +1233,15 @@ def run_governed_execution(
             workspace_root=workspace_root,
             reason=str(exc),
             execution_identity=execution_identity,
+            agent_session_id=agent_session_id,
             work_contract_id=work_contract_id,
             shared_understanding=shared_understanding,
             work_contract=work_contract,
+            pre_codex_source_revision=pre_codex_source_revision,
+            codex_process_exit_code=codex_process_exit_code,
+            codex_process_version=codex_version,
+            agent_stdout_sha256=agent_stdout_sha256,
+            agent_stderr_sha256=agent_stderr_sha256,
         )
 
     # ----- RED qualification (RQ4-R2-C2-R1 Repair A) -----
@@ -1181,6 +1263,7 @@ def run_governed_execution(
             red_qualified = False
 
     # ----- Mutation chain -----
+    pre_apply_source_revision = _fixture_root_sha(workspace_root)
     mutation = execute_mutation_chain(
         agent_stdout=agent_stdout,
         work_contract_id=work_contract_id,
@@ -1191,8 +1274,18 @@ def run_governed_execution(
         execution_identity_dict=execution_identity.model_dump(mode="json"),
         red_qualification_ref=red_qualification_ref,
         red_qualified=red_qualified,
-        current_source_revision_at_apply=_fixture_root_sha(workspace_root),
+        current_source_revision_at_apply=pre_apply_source_revision,
     )
+
+    # ----- Post-apply source revision (R1) -----
+    # RQ4-R2-C3-R1 §5: after the Harness write the source revision must be
+    # re-captured. The Harness writes are the only legal mutations between
+    # pre_apply and post_apply; if Codex had mutated the fixture the
+    # Codex read-only proof above would already have failed.
+    if mutation.success and mutation.apply_receipt is not None:
+        post_apply_source_revision = _fixture_root_sha(workspace_root)
+    else:
+        post_apply_source_revision = pre_apply_source_revision
 
     if not mutation.success:
         verification = verify_workspace(
@@ -1227,6 +1320,14 @@ def run_governed_execution(
             shared_understanding=shared_understanding,
             work_contract=work_contract,
             source_revision=before.source_revision,
+            pre_codex_source_revision=pre_codex_source_revision,
+            pre_apply_source_revision=pre_apply_source_revision,
+            post_apply_source_revision=post_apply_source_revision,
+            agent_session_id=agent_session_id,
+            codex_process_exit_code=codex_process_exit_code,
+            codex_process_version=codex_version,
+            agent_stdout_sha256=agent_stdout_sha256,
+            agent_stderr_sha256=agent_stderr_sha256,
             allowed_write_paths=list(allowed_write_paths),
             proposal=mutation.proposal,
             admission_receipt=mutation.admission_receipt,
@@ -1280,6 +1381,14 @@ def run_governed_execution(
         shared_understanding=shared_understanding,
         work_contract=work_contract,
         source_revision=before.source_revision,
+        pre_codex_source_revision=pre_codex_source_revision,
+        pre_apply_source_revision=pre_apply_source_revision,
+        post_apply_source_revision=post_apply_source_revision,
+        agent_session_id=agent_session_id,
+        codex_process_exit_code=codex_process_exit_code,
+        codex_process_version=codex_version,
+        agent_stdout_sha256=agent_stdout_sha256,
+        agent_stderr_sha256=agent_stderr_sha256,
         allowed_write_paths=list(allowed_write_paths),
         proposal=mutation.proposal,
         admission_receipt=mutation.admission_receipt,
@@ -1299,9 +1408,17 @@ def _block(
     workspace_root: Path,
     reason: str,
     execution_identity: ExecutionIdentity | None = None,
+    agent_session_id: str | None = None,
     work_contract_id: str | None = None,
     shared_understanding: SharedUnderstandingContext | None = None,
     work_contract: WorkContract | None = None,
+    pre_codex_source_revision: str = "",
+    pre_apply_source_revision: str = "",
+    post_apply_source_revision: str = "",
+    codex_process_exit_code: int | None = None,
+    codex_process_version: str | None = None,
+    agent_stdout_sha256: str | None = None,
+    agent_stderr_sha256: str | None = None,
 ) -> GovernedExecutionResult:
     """Build a BLOCKED GovernedExecutionResult for fail-closed paths.
 
@@ -1310,6 +1427,7 @@ def _block(
     terminal decision so evidence lineage is preserved.
     """
     identity = execution_identity or _generate_execution_identity(workspace_root)
+    session_id = agent_session_id or _compute_agent_session_id()
     wcid = work_contract_id or f"wc-{identity.root_task_id}"
     su = shared_understanding or build_shared_understanding(
         workspace_root, repository_id=request.repository_id
@@ -1375,6 +1493,14 @@ def _block(
         shared_understanding=su,
         work_contract=wc,
         source_revision="BLOCKED",
+        pre_codex_source_revision=pre_codex_source_revision,
+        pre_apply_source_revision=pre_apply_source_revision,
+        post_apply_source_revision=post_apply_source_revision,
+        agent_session_id=session_id,
+        codex_process_exit_code=codex_process_exit_code,
+        codex_process_version=codex_process_version,
+        agent_stdout_sha256=agent_stdout_sha256,
+        agent_stderr_sha256=agent_stderr_sha256,
         allowed_write_paths=list(derive_allowed_write_paths(request.task)),
         proposal=None,
         admission_receipt=None,

@@ -472,8 +472,17 @@ def _build_governed_runtime(workspace: Path) -> Any:
 
 
 def _render_governed_result(presentation: PresentationResult) -> None:
-    typer.echo(presentation.status)
-    if presentation.reason and presentation.status != "VERIFIED":
+    """Map the terminal decision into the public Front Door presentation label.
+
+    RQ4-R2-C3-R1: the Front Door is presentation-only. The mapping from a
+    canonical ``TerminalDecision`` value (COMPLETED / FAILED / BLOCKED) to
+    the public label (VERIFIED / FAILED / NEEDS_ATTENTION) is owned by this
+    function and nowhere else. The Front Door NEVER decides whether
+    completion is allowed; that authority lives in the Terminal Finalizer.
+    """
+    presentation_label = PRESENTATION_MAP.get(presentation.status, "NEEDS_ATTENTION")
+    typer.echo(presentation_label)
+    if presentation.reason and presentation_label != "VERIFIED":
         typer.echo(f"Reason: {presentation.reason}", err=True)
 
 
