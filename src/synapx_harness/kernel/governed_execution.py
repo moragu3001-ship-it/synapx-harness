@@ -236,6 +236,11 @@ def capture_before_state(
     RQ4 §14 invariant: the same fixture SHA is captured here so it can be
     re-checked immediately after Codex returns to prove the Codex process
     did NOT modify the workspace directly.
+
+    The ``source_revision`` is computed via the same canonical helper that
+    the composition layer uses at apply-time (``_fixture_root_sha``). No
+    suffix is appended: the revision IS the fixture SHA. The per-path
+    binding is carried separately in ``expected_before_sha256_by_path``.
     """
     root = repository_root.resolve()
     expected: dict[str, str] = {}
@@ -260,9 +265,8 @@ def capture_before_state(
         expected[normalized] = _resolve_canonical_sha(target)
 
     fixture_sha = _fixture_root_sha(root)
-    source_revision = f"{fixture_sha}:{len(expected)}"
     return BeforeState(
-        source_revision=source_revision,
+        source_revision=fixture_sha,
         expected_before_sha256_by_path=expected,
         fixture_sha_before_codex=fixture_sha,
     )
@@ -275,16 +279,35 @@ def _fixture_root_sha(repository_root: Path) -> str:
     byte content (CRLF normalised) into a SHA-256. This is NOT git, so it
     survives fixtures that are not git repos (the real Codex E2E fixture
     is a fresh git repo and also has this property).
+
+    Cache / VCS directories that external tools (Codex, pytest, Python)
+    may create mid-run, plus internal SynapX run-state artifacts
+    (``.fixture_sha_before.json``, ``.synapx_red_evidence.json``, etc.),
+    are skipped deterministically so the SHA stays stable across the
+    run lifecycle and does not depend on when the artifact was written.
     """
+    skip_dirs = frozenset(
+        {
+            ".git",
+            "__pycache__",
+            ".venv",
+            "node_modules",
+            "dist",
+            "build",
+            ".ruff_cache",
+            ".pytest_cache",
+            ".mypy_cache",
+            ".tox",
+        }
+    )
+    skip_file_prefixes = (".fixture_sha_", ".synapx_", ".synapx-cache-")
+
     digest = hashlib.sha256()
     root = repository_root.resolve()
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        # Skip dotfiles & cache directories deterministically.
-        dirnames[:] = sorted(
-            d for d in dirnames if not d.startswith(".") and d != "__pycache__"
-        )
+        dirnames[:] = sorted(d for d in dirnames if d not in skip_dirs)
         for fname in sorted(filenames):
-            if fname.startswith("."):
+            if fname.startswith(skip_file_prefixes):
                 continue
             full = Path(dirpath) / fname
             try:
