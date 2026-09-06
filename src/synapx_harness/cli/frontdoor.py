@@ -148,6 +148,27 @@ def _render_result(presentation: str, reason: str | None = None) -> None:
         typer.echo(f"Reason: {reason}", err=True)
 
 
+def _enforce_public_exit_contract(presentation_label: str) -> None:
+    """Map a Front Door presentation label to process exit semantics.
+
+    RQ5-R2 §6/§7/§8: this is the ONLY place the Front Door translates a
+    terminal presentation into an OS process exit code. It does NOT decide
+    terminal state; it only enforces that any presentation other than
+    ``VERIFIED`` (the public label for Terminal.COMPLETED) fails the process.
+
+    Canonical public exit contract:
+
+        VERIFIED        (Terminal_COMPLETED) -> process exit 0
+        FAILED          (Terminal_FAILED)    -> process exit non-zero
+        NEEDS_ATTENTION (Terminal_BLOCKED)   -> process exit non-zero
+        unknown / invalid                    -> process exit non-zero
+
+    The exact non-zero value is unified to ``1`` for the Public Alpha.
+    """
+    if presentation_label != "VERIFIED":
+        raise typer.Exit(code=1)
+
+
 def _map_to_presentation(result: object | None) -> str:
     if not isinstance(result, PresentationResult):
         return "NEEDS_ATTENTION"
@@ -237,6 +258,7 @@ def run(
         presentation,
         result.reason if isinstance(result, PresentationResult) else None,
     )
+    _enforce_public_exit_contract(presentation)
 
 
 # ---------------------------------------------------------------------------
@@ -471,7 +493,7 @@ def _build_governed_runtime(workspace: Path) -> Any:
     return GovernedFrontDoorRuntimeBridge(workspace_root=str(workspace))
 
 
-def _render_governed_result(presentation: PresentationResult) -> None:
+def _render_governed_result(presentation: PresentationResult) -> str:
     """Map the terminal decision into the public Front Door presentation label.
 
     RQ4-R2-C3-R1: the Front Door is presentation-only. The mapping from a
@@ -479,11 +501,15 @@ def _render_governed_result(presentation: PresentationResult) -> None:
     the public label (VERIFIED / FAILED / NEEDS_ATTENTION) is owned by this
     function and nowhere else. The Front Door NEVER decides whether
     completion is allowed; that authority lives in the Terminal Finalizer.
+
+    Returns the rendered presentation label so the caller can enforce the
+    public exit contract in one place (RQ5-R2 §8).
     """
     presentation_label = PRESENTATION_MAP.get(presentation.status, "NEEDS_ATTENTION")
     typer.echo(presentation_label)
     if presentation.reason and presentation_label != "VERIFIED":
         typer.echo(f"Reason: {presentation.reason}", err=True)
+    return presentation_label
 
 
 def _write_same_run_receipt(envelope: dict[str, object], out_path: Path) -> None:
@@ -555,7 +581,8 @@ def governed_callback(
     if presentation is None:
         typer.echo("NEEDS_ATTENTION", err=True)
         raise typer.Exit(code=1)
-    _render_governed_result(presentation)
+    label = _render_governed_result(presentation)
+    _enforce_public_exit_contract(label)
 
 
 if __name__ == "__main__":
