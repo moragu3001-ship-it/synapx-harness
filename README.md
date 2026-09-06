@@ -135,8 +135,8 @@ synapx-harness review verify        <zip>
 synapx-harness review seal          <zip> --output-receipt <path>
 synapx-harness review verify-seal   <zip> --receipt <path>
 
-synapx-harness storage census       --runs-root <path>
-synapx-harness storage gc           --runs-root <path>
+synapx-harness storage census       --runs-root <path> [--project-root <path>] [--skip-ref-scan]
+synapx-harness storage gc           --runs-root <path> [--project-root <path>] [--skip-ref-scan] [--ttl-days <N>] [--max-total-bytes <N>] [--apply]
 ```
 
 ### `synapx` (Front Door)
@@ -145,6 +145,33 @@ synapx-harness storage gc           --runs-root <path>
 synapx --version
 synapx [--workspace <path>] [--task <task>]
 ```
+
+### `synapx doctor` (readiness diagnostic)
+
+```text
+synapx doctor            # human-readable readiness summary
+synapx doctor --json     # machine-readable readiness JSON
+```
+
+`doctor` reports the installed distribution version, the supported
+agent, the Codex CLI version (or `NOT_FOUND`), and the workspace path.
+It is the recommended first-run check before
+`synapx --workspace <repo> --task <task>`.
+
+### `synapx run` (governed execution)
+
+```text
+synapx run --workspace <repo> --task "<task>" [--receipt-out <path>]
+```
+
+`run` drives the canonical positive path: Shared Understanding ->
+WorkContract -> ExecutionIdentity -> Codex Official Headless CLI ->
+structured proposal -> mutation chain -> independent verifier ->
+evidence seal -> terminal decision. Output is one of the public
+presentation labels: `VERIFIED`, `FAILED`, or `NEEDS_ATTENTION`.
+`--receipt-out` (optional) writes the canonical same-run lineage
+envelope to a file. The Front Door does NOT decide terminal
+authority; that authority lives in the Terminal Finalizer.
 
 ## Current Limitations
 
@@ -181,6 +208,16 @@ deferred to post-Alpha:
 - Kiro concrete adapter (protocol-only placeholder only)
 
 These items are not pulled back into the Public Alpha critical path.
+
+## AI-assisted development
+
+> AI coding agents were extensively used to assist implementation and
+> verification. Architecture, contracts, acceptance criteria,
+> qualification gates, and final release decisions remained
+> maintainer-controlled.
+
+This applies to the source code, contract tests, and release
+documentation of SynapX-Harness.
 
 ## License
 

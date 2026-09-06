@@ -58,3 +58,6 @@ htmlcov/
 .idea/
 .DS_Store
 Thumbs.db
+
+# --- RQ7 release evidence staging (NEVER stage into the public commit) ---
+/qualification/

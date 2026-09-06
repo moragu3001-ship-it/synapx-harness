@@ -20,6 +20,16 @@ their qualification / backlog gates where applicable.
   testing in this release.
 - **uv-based install.** `uv` is the implied build system. `pip` /
   `poetry` install paths are not exercised.
+- **Large source context on Windows** *(pending Owner review for
+  Public Alpha inclusion)*. When the governed pipeline embeds a very
+  large source file (~40KB or more) into a Codex instruction that is
+  then passed through a Windows `CreateProcess`-based invocation, the
+  host process command-line length limit can affect invocation. RQ6
+  qualification covered normal Python OSS single-file repair and did
+  not exercise this boundary. Inclusion of this item in the public
+  list is the Owner's call; without it, downstream users on Windows
+  who attempt very-large single-file mutations may need to split the
+  work.
 
 ## Coding-agent coverage limitations
 
