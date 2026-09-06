@@ -1034,4 +1034,99 @@ class TestCodexPromptContract:
             )
 
 
+class TestR214LineageWorkspaceBindingBoundedToBridge:
+    """RQ4-R2-C3-R2-C4 §4 / §5: lineage repository_root must bind to the
+    bridge's bound workspace, NEVER to process current working directory
+    or any caller process attribute. This regression test class directly
+    exercises the bridge's :meth:`_resolve_lineage_repository_root` helper
+    to prove:
+
+    * Caller CWD is irrelevant when result lacks workspace_root.
+    * Bound workspace wins.
+    * Drift between bound workspace and result.workspace_root fails closed.
+    * No source line in the helper falls back to ``Path.cwd()``.
+    """
+
+    def test_resolve_ignores_caller_cwd_when_result_lacks_workspace_root(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        caller_cwd = tmp_path / "caller_cwd"
+        caller_cwd.mkdir()
+        bound_dir = tmp_path / "bound_workspace"
+        bound_dir.mkdir()
+        monkeypatch.chdir(caller_cwd)
+
+        bridge = GovernedFrontDoorRuntimeBridge(workspace_root=str(bound_dir))
+
+        class _StubResult:
+            pass
+
+        result: Any = _StubResult()
+        resolved = bridge._resolve_lineage_repository_root(result)
+        assert resolved == bound_dir.resolve(), (
+            f"lineage repository_root drifted from bound workspace: "
+            f"got {resolved} expected {bound_dir.resolve()}"
+        )
+        assert resolved != caller_cwd.resolve(), (
+            "lineage repository_root MUST NOT fall back to caller cwd"
+        )
+
+    def test_resolve_passes_through_when_result_exposes_matching_workspace_root(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        caller_cwd = tmp_path / "caller_cwd"
+        caller_cwd.mkdir()
+        bound_dir = tmp_path / "bound_workspace"
+        bound_dir.mkdir()
+        monkeypatch.chdir(caller_cwd)
+
+        bridge = GovernedFrontDoorRuntimeBridge(workspace_root=str(bound_dir))
+
+        class _StubResult:
+            workspace_root = str(bound_dir.resolve())
+
+        result: Any = _StubResult()
+        resolved = bridge._resolve_lineage_repository_root(result)
+        assert resolved == bound_dir.resolve()
+
+    def test_resolve_fails_closed_on_workspace_root_drift(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        caller_cwd = tmp_path / "caller_cwd"
+        caller_cwd.mkdir()
+        bound_dir = tmp_path / "bound_workspace"
+        bound_dir.mkdir()
+        drift_dir = tmp_path / "drift_workspace"
+        drift_dir.mkdir()
+        monkeypatch.chdir(caller_cwd)
+
+        bridge = GovernedFrontDoorRuntimeBridge(workspace_root=str(bound_dir))
+
+        class _StubResult:
+            workspace_root = str(drift_dir.resolve())
+
+        result: Any = _StubResult()
+        with pytest.raises(RuntimeError, match="LINEAGE_WORKSPACE_BINDING_MISMATCH"):
+            bridge._resolve_lineage_repository_root(result)
+
+    def test_helper_source_never_falls_back_to_path_cwd(self) -> None:
+        # Static safety net: ensure the resolved helper source does NOT
+        # contain a Path.cwd() fallback. If a future contributor
+        # reintroduces it, this test fails closed.
+        import inspect
+
+        src = inspect.getsource(
+            GovernedFrontDoorRuntimeBridge._resolve_lineage_repository_root
+        )
+        assert "Path.cwd" not in src, (
+            "_resolve_lineage_repository_root MUST NOT fall back to Path.cwd()"
+        )
+
+
 __all__ = ["_count_subtract", "_proposal_text"]

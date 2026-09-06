@@ -192,22 +192,47 @@ class GovernedFrontDoorRuntimeBridge:
         envelope = self._build_lineage_envelope(result)
         return result, presentation, envelope
 
-    @staticmethod
-    def _build_lineage_envelope(result: Any) -> dict[str, object]:
+    def _resolve_lineage_repository_root(self, result: Any) -> Path:
+        """Resolve the canonical lineage repository_root for ``result``.
+
+        RQ4-R2-C3-R2-C4 §4: the envelope's ``repository_root`` MUST equal
+        the exact resolved workspace the bridge was bound to by the public
+        ``--workspace`` argument. The previous implementation fell back to
+        process current working directory when ``result.workspace_root``
+        was absent, which is forbidden because the caller's process CWD
+        has no semantic relationship to the selected workspace.
+
+        If the result exposes ``workspace_root``, the bridge MUST fail
+        closed when the result's workspace disagrees with the bound
+        workspace, so any drift surfaces as a hard stop rather than as a
+        silent lineage rewrite.
+        """
+        bound_workspace = Path(self._workspace_root).resolve()
+        result_workspace = getattr(result, "workspace_root", None)
+        if result_workspace is not None:
+            actual = Path(result_workspace).resolve()
+            if actual != bound_workspace:
+                raise RuntimeError(
+                    "LINEAGE_WORKSPACE_BINDING_MISMATCH: "
+                    f"bound={bound_workspace} result={actual}"
+                )
+        return bound_workspace
+
+    def _build_lineage_envelope(self, result: Any) -> dict[str, object]:
         """Build the canonical lineage envelope from the in-memory result.
 
         RQ4-R2-C3-R2 §15: the envelope MUST be derived from the same
         :class:`GovernedExecutionResult` the run produced; no second
         invocation, no filesystem reconstruction, no authority decision.
+
+        RQ4-R2-C3-R2-C4 §4: lineage repository_root is resolved through
+        :meth:`_resolve_lineage_repository_root`, which is bound to the
+        workspace the public CLI was invoked with and never falls back to
+        process current working directory.
         """
         from synapx_harness.kernel.c3_r1_lineage import build_lineage_envelope
 
-        # ``result.workspace_root`` may not exist on stub results; fall
-        # back to the bridge's bound workspace. The Front Door re-emits
-        # the envelope's repository_root verbatim, so any drift between
-        # the bound workspace and the captured one surfaces in the
-        # receipt.
-        repository_root = Path(getattr(result, "workspace_root", Path.cwd()))
+        repository_root = self._resolve_lineage_repository_root(result)
         return build_lineage_envelope(result, repository_root=repository_root)
 
     @staticmethod
