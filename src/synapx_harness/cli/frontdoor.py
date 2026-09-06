@@ -486,11 +486,40 @@ def _render_governed_result(presentation: PresentationResult) -> None:
         typer.echo(f"Reason: {presentation.reason}", err=True)
 
 
+def _write_same_run_receipt(envelope: dict[str, object], out_path: Path) -> None:
+    """Serialize a pre-built canonical lineage envelope to ``out_path``.
+
+    RQ4-R2-C3-R2 §15 same-run receipt seam. The seam is **disabled by
+    default** — the Front Door only invokes it when ``--receipt-out`` is
+    supplied on the ``run`` subcommand. The ``envelope`` is built by
+    the runtime bridge (so this module stays free of
+    ``synapx_harness.kernel`` imports per TestA9); the serializer only
+    writes it verbatim. It MUST NOT re-construct any prior stage,
+    re-run Codex, or make any admission / terminal decision.
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(
+        json.dumps(envelope, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
 @governed_app.callback(invoke_without_command=True)
 def governed_callback(
     ctx: typer.Context,
     workspace: WorkspaceOption = None,
     task: TaskOption = None,
+    receipt_out: Annotated[
+        Path | None,
+        typer.Option(
+            "--receipt-out",
+            help=(
+                "Optional path for the same-run canonical lineage receipt. "
+                "Disabled by default; when supplied, the canonical envelope "
+                "from the current governed execution is serialized verbatim."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Run the RQ4-R2-C3 public governed lifecycle."""
     if ctx.invoked_subcommand is not None:
@@ -502,7 +531,27 @@ def governed_callback(
     workspace_name, workspace_path = _detect_workspace(workspace)
     typer.echo(f"Workspace: {workspace_name}")
     runtime = _build_governed_runtime(workspace_path)
-    presentation = runtime.invoke(task)
+
+    if receipt_out is not None:
+        # Duck-type the runtime: the canonical ``GovernedFrontDoorRuntimeBridge``
+        # exposes ``invoke_governed_with_result``; the legacy
+        # ``FrontDoorRuntimeBridge`` does not. When ``--receipt-out`` is
+        # supplied we REQUIRE the canonical seam so the same-run contract
+        # cannot be silently degraded by a non-governed runtime.
+        if not hasattr(runtime, "invoke_governed_with_result"):
+            typer.echo("NEEDS_ATTENTION", err=True)
+            typer.echo(
+                "Reason: --receipt-out requires the canonical governed "
+                "runtime bridge (SubprocessCodexRuntime-backed).",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        _result, presentation, envelope = runtime.invoke_governed_with_result(
+            task=task
+        )
+        _write_same_run_receipt(envelope, receipt_out)
+    else:
+        presentation = runtime.invoke(task)
     if presentation is None:
         typer.echo("NEEDS_ATTENTION", err=True)
         raise typer.Exit(code=1)

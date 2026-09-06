@@ -148,6 +148,68 @@ class GovernedFrontDoorRuntimeBridge:
         result = run_governed_execution(request)
         return self._map_to_presentation(result)
 
+    def invoke_governed_with_result(
+        self,
+        *,
+        task: str,
+        red_qualification_ref: str | None = None,
+        verification_command: list[str] | None = None,
+        model: str | None = None,
+        timeout_seconds: int | None = None,
+        repository_id: str | None = None,
+        work_contract_id: str | None = None,
+        codex_runtime_factory: Callable[[], Any] | None = None,
+    ) -> tuple[Any, PresentationResult | None, dict[str, object]]:
+        """Run the governed lifecycle and return the raw result, the
+        presentation, and the canonical lineage envelope.
+
+        RQ4-R2-C3-R2 §15 same-run receipt seam: this overload forbids
+        every test-only override. The positive-path public CLI bridge
+        uses this entry point so the same-run receipt written by the
+        Front Door (``--receipt-out``) can never be produced by a
+        short-circuit override. The lineage envelope is built here
+        (not in the Front Door) so the Front Door stays free of
+        ``synapx_harness.kernel`` imports per TestA9.
+        """
+        request = GovernedExecutionRequest(
+            workspace_root=Path(self._workspace_root),
+            task=task,
+            model=model or self._model,
+            timeout_seconds=timeout_seconds or self._timeout_seconds,
+            red_qualification_ref=red_qualification_ref,
+            verification_command=verification_command,
+            codex_runtime_factory=codex_runtime_factory
+            or self._codex_runtime_factory,
+            # FORBIDDEN ON POSITIVE PATH: every override seam is None.
+            codex_stdout_override=None,
+            codex_proposal_instruction_override=None,
+            red_qualified_override=None,
+            repository_id=repository_id or "synapx-rq4-c3",
+            work_contract_id=work_contract_id,
+        )
+        result = run_governed_execution(request)
+        presentation = self._map_to_presentation(result)
+        envelope = self._build_lineage_envelope(result)
+        return result, presentation, envelope
+
+    @staticmethod
+    def _build_lineage_envelope(result: Any) -> dict[str, object]:
+        """Build the canonical lineage envelope from the in-memory result.
+
+        RQ4-R2-C3-R2 §15: the envelope MUST be derived from the same
+        :class:`GovernedExecutionResult` the run produced; no second
+        invocation, no filesystem reconstruction, no authority decision.
+        """
+        from synapx_harness.kernel.c3_r1_lineage import build_lineage_envelope
+
+        # ``result.workspace_root`` may not exist on stub results; fall
+        # back to the bridge's bound workspace. The Front Door re-emits
+        # the envelope's repository_root verbatim, so any drift between
+        # the bound workspace and the captured one surfaces in the
+        # receipt.
+        repository_root = Path(getattr(result, "workspace_root", Path.cwd()))
+        return build_lineage_envelope(result, repository_root=repository_root)
+
     @staticmethod
     def _map_to_presentation(result: Any) -> PresentationResult | None:
         """Map the governed execution result onto Front Door presentation."""
