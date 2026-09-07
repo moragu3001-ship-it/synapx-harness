@@ -19,7 +19,12 @@ from ruamel.yaml import YAML
 
 from synapx_harness.contracts.registry import REGISTRY
 from synapx_harness.contracts.registry import get as get_descriptor
-from synapx_harness.validators.schema_validator import load_schema
+from synapx_harness.validators.schema_validator import (
+    PACKAGED_SCHEMAS_PACKAGE,
+    load_schema,
+    load_schema_from_package,
+    packaged_schemas_root,
+)
 
 REQUIRED_FIELDS: tuple[str, ...] = ("contract_type", "schema_version")
 
@@ -140,7 +145,7 @@ def _validate_against_schema(
         return
     descriptor = get_descriptor(cid)
     schema_name = _contract_filename_for(descriptor.contract_type)
-    schema = load_schema(schemas_root, f"governance/{schema_name}.schema.json")
+    schema = load_schema_from_package(f"governance/{schema_name}.schema.json")
     try:
         Draft202012Validator.check_schema(schema)
     except SchemaError as exc:
@@ -180,7 +185,12 @@ def validate_governance(
     """Walk governance roots and validate every YAML file.
 
     The validator is fail-closed: empty roots, malformed YAML, and
-    schema mismatches all yield ``ok=False``.
+    schema mismatches all yield ``ok=False``. Schema lookup goes
+    through the packaged ``synapx_harness._schemas`` resource so source
+    checkout and installed wheel resolve identically. The ``schemas_root``
+    keyword argument is accepted for backward compatibility with existing
+    tests that pass an explicit on-disk path; it does not affect schema
+    resolution, which always uses the packaged schema set.
     """
     if not roots:
         return GovernanceValidationReport(
@@ -191,13 +201,16 @@ def validate_governance(
             errors=("no governance roots supplied",),
         )
 
-    if schemas_root is None:
-        from synapx_harness.validators.schema_validator import (
-            DEFAULT_SCHEMAS_ROOT,
-            _resolve_schemas_root,
+    try:
+        packaged_schemas_root()
+    except (FileNotFoundError, ModuleNotFoundError) as exc:
+        return GovernanceValidationReport(
+            ok=False,
+            missing_fields=(),
+            files=(),
+            failed_files=(),
+            errors=(f"packaged schemas unavailable: {exc}",),
         )
-
-        schemas_root = _resolve_schemas_root(Path.cwd() / DEFAULT_SCHEMAS_ROOT)
 
     files: list[str] = []
     failed_files: list[str] = []

@@ -2,7 +2,7 @@
 
 Constructs a typed :class:`WorkContract` via the canonical builder
 (:func:`build`). Output shape is verified by the runtime JSON Schema
-(``schemas/runtime/work_contract.schema.json``).
+(``synapx_harness/_schemas/runtime/work_contract.schema.json``).
 
 Two emission paths are supported:
 

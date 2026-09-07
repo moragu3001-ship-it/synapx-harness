@@ -28,7 +28,9 @@ def test_okf_concept_accepts_minimal_payload() -> None:
 
 def test_okf_concept_rejects_company_fields() -> None:
     """Company-specific fields must not be declared as OKF required fields."""
-    schema_path = CORE_ROOT / "schemas" / "okf" / "okf_concept.schema.json"
+    schema_path = (
+        CORE_ROOT / "src" / "synapx_harness" / "_schemas" / "okf" / "okf_concept.schema.json"
+    )
     schema = schema_path.read_text(encoding="utf-8")
     for company_field in (
         "document_state",

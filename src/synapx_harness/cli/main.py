@@ -115,11 +115,7 @@ def contract_validate(
     policies = root / "policies"
     profiles = root / "profiles"
     registry = root / "repository-registry"
-    schemas_root = Path(__file__).resolve().parents[3] / "schemas"
-    report = validate_governance(
-        [policies, profiles, registry],
-        schemas_root=schemas_root,
-    )
+    report = validate_governance([policies, profiles, registry])
     _exit_with_report(report)
 
 
@@ -154,8 +150,7 @@ def policy_validate(
 ) -> None:
     """Validate Policy files under a service-pack root."""
     policies = root / "policies"
-    schemas_root = Path(__file__).resolve().parents[3] / "schemas"
-    report = validate_governance([policies], schemas_root=schemas_root)
+    report = validate_governance([policies])
     _exit_with_report(report)
 
 

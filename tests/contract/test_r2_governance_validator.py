@@ -6,7 +6,7 @@ from pathlib import Path
 from synapx_harness.validators.governance_validator import validate_governance
 
 CORE_ROOT = Path(__file__).resolve().parents[2]
-SCHEMAS_ROOT = CORE_ROOT / "schemas"
+SCHEMAS_ROOT = CORE_ROOT / "src" / "synapx_harness" / "_schemas"
 
 
 def _write_yaml(path: Path, data: dict[str, object]) -> None:

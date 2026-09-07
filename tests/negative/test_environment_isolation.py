@@ -48,7 +48,8 @@ def test_legacy_kilo_backup_is_not_imported() -> None:
 
 
 def test_legacy_kilo_backup_is_not_symlinked() -> None:
-    for root in (CORE_ROOT, CORE_ROOT / "schemas", CORE_ROOT / "tests"):
+    schemas_root = CORE_ROOT / "src" / "synapx_harness" / "_schemas"
+    for root in (CORE_ROOT, schemas_root, CORE_ROOT / "tests"):
         if not root.is_dir():
             continue
         for path in root.rglob("*"):

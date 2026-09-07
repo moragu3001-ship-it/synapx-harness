@@ -107,7 +107,7 @@ _REFERENCE_FILE_PATTERNS: tuple[str, ...] = (
 _REFERENCE_FILE_PATTERNS_RE = tuple(re.compile(p) for p in _REFERENCE_FILE_PATTERNS)
 
 
-SCAN_TARGETS: tuple[str, ...] = ("src", "schemas", "tests")
+SCAN_TARGETS: tuple[str, ...] = ("src", "tests")
 SERVICE_PACK_TARGET_FILES: tuple[str, ...] = (
     "SERVICE_PACK_MANIFEST.yaml",
     "AGENTS.md",

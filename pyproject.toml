@@ -43,7 +43,7 @@ select = ["E", "F", "W", "I", "B", "UP"]
 [tool.pyright]
 pythonVersion = "3.12"
 include = ["src", "tests"]
-exclude = [".venv", "schemas"]
+exclude = [".venv", "dist", "qualification"]
 venvPath = "."
 venv = ".venv"
 

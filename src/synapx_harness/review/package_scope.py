@@ -48,7 +48,7 @@ SERVICE_PACK_DIR_ALLOWLIST: frozenset[str] = frozenset(
     }
 )
 
-CORE_DIR_ALLOWLIST: frozenset[str] = frozenset({"src", "schemas", "tests"})
+CORE_DIR_ALLOWLIST: frozenset[str] = frozenset({"src", "tests"})
 
 
 def normalize_path(rel: str) -> str:

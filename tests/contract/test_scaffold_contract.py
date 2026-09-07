@@ -18,9 +18,9 @@ def test_synapx_harness_required_directories_exist(core_root: Path) -> None:
         core_root / "src" / "synapx_harness" / "kernel",
         core_root / "src" / "synapx_harness" / "validators",
         core_root / "src" / "synapx_harness" / "adapters" / "kiro",
-        core_root / "schemas" / "okf",
-        core_root / "schemas" / "governance",
-        core_root / "schemas" / "runtime",
+        core_root / "src" / "synapx_harness" / "_schemas" / "okf",
+        core_root / "src" / "synapx_harness" / "_schemas" / "governance",
+        core_root / "src" / "synapx_harness" / "_schemas" / "runtime",
         core_root / "tests" / "unit",
         core_root / "tests" / "contract",
         core_root / "tests" / "negative",
@@ -94,7 +94,8 @@ def test_legacy_kilo_backup_is_not_imported() -> None:
 
 def test_legacy_kilo_backup_is_not_symlinked() -> None:
     """No symlink or junction may point at the backup path."""
-    for root in (CORE_ROOT, CORE_ROOT / "schemas", CORE_ROOT / "tests"):
+    schemas_root = CORE_ROOT / "src" / "synapx_harness" / "_schemas"
+    for root in (CORE_ROOT, schemas_root, CORE_ROOT / "tests"):
         if not root.is_dir():
             continue
         for path in root.rglob("*"):

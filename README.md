@@ -175,16 +175,15 @@ authority; that authority lives in the Terminal Finalizer.
 
 ## Current Limitations
 
-See `KNOWN_LIMITATIONS.md` for the authoritative list.
+See `KNOWN_LIMITATIONS.md` for the authoritative list of Public Alpha
+known limitations.
 
-The single highest-priority Public Alpha limitation:
-
-> The `synapx` Front Door is present, but its default RuntimePort
-> is not yet wired to the governed runtime for a normal end-user
-> installation. This is a release qualification target for RQ-3.
-
-The Front Door is not absent; its implementation is present and
-its default user-runtime wiring is the release-qualification target.
+The Public Alpha Front Door (`synapx`) drives the governed runtime
+through the canonical lifecycle: shared understanding, Work Contract,
+Codex headless CLI, independent verification, evidence seal, terminal
+finalizer. The default end-user wiring is the `synapx run` command
+documented above. Public Alpha qualification covers bounded governed
+mutation on Python OSS repositories (RQ6 acceptance evidence).
 
 ## What Is Not In Public Alpha
 

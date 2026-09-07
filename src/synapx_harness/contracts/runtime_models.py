@@ -1,9 +1,9 @@
 """Typed Runtime Models (Pydantic v2).
 
 These models produce JSON payloads whose shape is verified by the
-runtime JSON Schemas in `schemas/runtime/`. Every model MUST declare
-`contract_type` and `schema_version`, and `model_dump(mode="json")`
-MUST validate against the matching schema.
+runtime JSON Schemas in ``synapx_harness/_schemas/runtime/``. Every
+model MUST declare `contract_type` and `schema_version`, and
+`model_dump(mode="json")` MUST validate against the matching schema.
 
 H2-I1 Core Authority Spine (T00/T01/T02/T05):
   - ``schema_version`` is now an enum literal of ``0.1.0`` and ``0.2.0``.

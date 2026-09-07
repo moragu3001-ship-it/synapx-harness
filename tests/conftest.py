@@ -221,7 +221,7 @@ def service_pack_root(core_root: Path, tmp_path_factory) -> Path:
 
 @pytest.fixture(scope="session")
 def schemas_root(core_root: Path) -> Path:
-    return core_root / "schemas"
+    return core_root / "src" / "synapx_harness" / "_schemas"
 
 
 @pytest.fixture
