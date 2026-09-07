@@ -61,3 +61,6 @@ Thumbs.db
 
 # --- RQ7 release evidence staging (NEVER stage into the public commit) ---
 /qualification/
+
+# --- RQ7-P2-R1 Owner Review Package sidecars (never staged into public) ---
+*.sha256
