@@ -1,0 +1,29 @@
+# SynapX-Harness `.gitattributes`
+#
+# Lock line endings for JSON-schema resource files so the wheel build is
+# byte-deterministic across clone environments with different
+# `core.autocrlf` defaults. The packaged schemas under
+# `src/synapx_harness/_schemas/` are authoritative governance content
+# and must not depend on a host-side CRLF/LF transformation.
+#
+# This is RQ7-P2-R1 release hardening. Without it, a GitLab fresh clone
+# on a Windows machine with `core.autocrlf=true` produces wheels with
+# ~700 bytes of CRLF-derived content drift versus a clone with
+# `core.autocrlf=false`, which violates the §24 wheel hash equality
+# requirement.
+
+# Packaged governance / runtime / okf / review schemas: enforce LF.
+src/synapx_harness/_schemas/**/*.json   text eol=lf
+src/synapx_harness/_schemas/**/*.json5  text eol=lf
+src/synapx_harness/_schemas/**/*.yaml   text eol=lf
+src/synapx_harness/_schemas/**/*.yml    text eol=lf
+
+# Python sources are LF by default.
+*.py                                    text eol=lf
+
+# Markdown / TOML / YAML / shell scripts: LF.
+*.md                                    text eol=lf
+*.toml                                  text eol=lf
+*.yaml                                  text eol=lf
+*.yml                                   text eol=lf
+*.sh                                    text eol=lf
