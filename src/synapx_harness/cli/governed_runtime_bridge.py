@@ -48,7 +48,14 @@ SUPPORTED_AGENT_LABEL: str = "Codex_OFFICIAL_HEADLESS_CLI"
 
 
 def _default_codex_runtime_factory() -> SubprocessCodexRuntime:
-    """Return the canonical real Codex runtime (positive path)."""
+    """Return the canonical real Codex runtime (positive path).
+
+    Standalone default factory. Returns a runtime built with the bare
+    ``CODEX_BIN_NAME`` token; used only by paths that do not bind a
+    bridge instance. Governed execution must go through
+    :class:`GovernedFrontDoorRuntimeBridge`'s default factory which uses
+    the bridge's cached ``readiness.executable_path`` instead.
+    """
     return SubprocessCodexRuntime(codex_bin=CODEX_BIN_NAME)
 
 
@@ -74,9 +81,33 @@ class GovernedFrontDoorRuntimeBridge:
         self._model = model
         self._timeout_seconds = timeout_seconds
         self._readiness: CodexReadiness | None = None
-        self._codex_runtime_factory: Callable[[], Any] = (
-            codex_runtime_factory or _default_codex_runtime_factory
-        )
+        if codex_runtime_factory is not None:
+            # Explicit injection seam preserved verbatim (G4 backward
+            # compatibility for test-only backends).
+            self._codex_runtime_factory: Callable[[], Any] = codex_runtime_factory
+        else:
+            # RQ8-R1-R1: the canonical positive path MUST bind the
+            # governed Codex runtime to the same resolved executable
+            # authority that discovery and version probe selected.
+            # We close over ``self`` so the no-arg factory contract
+            # observed by ``kernel/governed_execution._default_adapter``
+            # is preserved and existing call sites (``factory()``)
+            # remain unchanged.
+            def _resolved_codex_runtime_factory() -> SubprocessCodexRuntime:
+                readiness = self.readiness()
+                # Fail-closed: if readiness is not READY or the resolved
+                # path was lost, fall back to the canonical bare name so
+                # runtime construction still succeeds at the seam while
+                # admission-driven invocation will reject ready=False
+                # before any execution happens.
+                resolved = (
+                    readiness.executable_path
+                    if (readiness.ready and readiness.executable_path)
+                    else CODEX_BIN_NAME
+                )
+                return SubprocessCodexRuntime(codex_bin=resolved)
+
+            self._codex_runtime_factory = _resolved_codex_runtime_factory
 
     @property
     def workspace_root(self) -> str:
