@@ -132,6 +132,14 @@ def discover_codex() -> CodexReadiness:
 
     The probe is read-only: it never mutates the host filesystem, never
     invokes ``codex login`` or ``codex logout``, and never reads credentials.
+
+    RQ8-R1 invariant: once discovery has resolved the canonical executable
+    path (``shutil.which(CODEX_BIN_NAME)``), the same resolved absolute path
+    MUST be the target of the version probe. Windows npm-installed Codex is
+    exposed as a ``.CMD`` wrapper; passing the bare ``"codex"`` string back
+    to ``subprocess.run`` can fail Windows ``CreateProcess`` even though the
+    resolved path executes successfully. Discovery, probe, and execution
+    MUST therefore share the same resolved target.
     """
     codex_path = shutil.which(CODEX_BIN_NAME)
     if not codex_path:
@@ -143,7 +151,7 @@ def discover_codex() -> CodexReadiness:
             ready=False,
             reason_code=REASON_CODE_BIN_NOT_FOUND,
         )
-    version = detect_codex_version(CODEX_BIN_NAME)
+    version = detect_codex_version(codex_path)
     if version is None:
         return CodexReadiness(
             executable_found=True,
@@ -308,8 +316,14 @@ class FrontDoorRuntimeBridge(RuntimePort):
     def _ensure_adapter(self) -> CodexAdapter:
         if self._adapter is not None:
             return self._adapter
-        backend = SubprocessCodexRuntime(codex_bin=CODEX_BIN_NAME)
-        self._adapter = CodexAdapter(backend=backend, codex_bin=CODEX_BIN_NAME)
+        # RQ8-R1: discovery, version probe, and execution MUST share the
+        # same resolved absolute executable path. ``self.readiness()``
+        # is already cached by the time ``invoke`` reaches this method,
+        # so the resolved path returned here is the exact target the
+        # version probe passed on the same admission cycle.
+        resolved_path = self.readiness().executable_path or CODEX_BIN_NAME
+        backend = SubprocessCodexRuntime(codex_bin=resolved_path)
+        self._adapter = CodexAdapter(backend=backend, codex_bin=resolved_path)
         return self._adapter
 
     def invoke(self, task: str) -> PresentationResult | None:

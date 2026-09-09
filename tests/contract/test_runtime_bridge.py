@@ -109,7 +109,11 @@ class TestDiscoverCodex:
         assert readiness.supported is True
         assert readiness.ready is True
         assert readiness.reason_code == REASON_CODE_OK
-        assert captured["cmd"][0] == CODEX_BIN_NAME
+        # RQ8-R1: the version probe MUST receive the resolved absolute
+        # executable path, not the bare ``"codex"`` token, so that
+        # Windows ``.CMD`` npm installations are admitted consistently
+        # with the discovered authority.
+        assert captured["cmd"][0] == "C:\\fake\\codex.exe"
         assert captured["cmd"][1] == "--version"
 
     def test_codex_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
