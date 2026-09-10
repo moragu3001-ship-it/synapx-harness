@@ -189,6 +189,10 @@ class _CapturingPopen:
     This is the gate for L3: the captured ``command[0]`` is the actual argv
     SynapX would hand to ``subprocess.Popen`` on the host. If the lineage
     drifts, this captures the bare token instead of the resolved path.
+
+    RQ8-R1-R2-R2 (D1): the fake also exposes a writable ``stdin`` BytesIO so
+    the canonical Codex stdin transport (RQ8-R1-R2-R2 D1) can deliver the
+    instruction payload exactly the way a real ``subprocess.Popen`` would.
     """
 
     def __init__(
@@ -205,8 +209,11 @@ class _CapturingPopen:
         self._cmd = list(cmd)
         self._stdout = io.BytesIO(stdout_payload)
         self._stderr = io.BytesIO(stderr_payload)
+        self._stdin = io.BytesIO()
+        self._stdin_closed = False
         self._exit_code = exit_code
         self._killed = False
+        self.stdin_payload_bytes: bytes | None = None
 
     def __enter__(self) -> "_CapturingPopen":
         return self
@@ -236,6 +243,33 @@ class _CapturingPopen:
 
     def wait(self, timeout: float | None = None) -> int:
         return self._exit_code
+
+    @property
+    def stdin(self) -> io.BytesIO:
+        """Writable stdin stream (RQ8-R1-R2-R2 D1 transport support)."""
+
+        outer = self
+
+        class _StdinAdapter:
+            def __init__(self) -> None:
+                pass
+
+            def write(self, data: bytes) -> int:
+                if outer._stdin_closed:
+                    raise BrokenPipeError(
+                        "CapturingPopen stdin already closed"
+                    )
+                if outer.stdin_payload_bytes is None:
+                    outer.stdin_payload_bytes = data
+                else:
+                    outer.stdin_payload_bytes = outer.stdin_payload_bytes + data
+                return outer._stdin.write(data)
+
+            def close(self) -> None:
+                outer._stdin_closed = True
+                outer._stdin.close()
+
+        return _StdinAdapter()
 
     @property
     def stdout(self):

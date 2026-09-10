@@ -137,10 +137,20 @@ class ProviderMeta(_StrictModel):
 
 
 class ProcessResult(_StrictModel):
-    """Process-level outcome (deterministic, not semantic)."""
+    """Process-level outcome (deterministic, not semantic).
+
+    RQ8-R1-R2-R2 (D2): ``process_started`` is ``False`` iff
+    ``subprocess.Popen`` raised before the process started. ``failure_class``
+    carries the authoritative runtime classification (one of
+    ``PROCESS_LAUNCH_ERROR``, ``PROCESS_TIMEOUT``,
+    ``PROCESS_STARTED_EXIT_NONZERO``, ``PROCESS_SUCCESS``). Both fields are
+    optional with safe defaults so existing call sites remain compatible.
+    """
 
     exit_code: int
     duration_ms: int = Field(ge=0)
+    process_started: bool = True
+    failure_class: str | None = None
 
 
 class AgentOutput(_StrictModel):

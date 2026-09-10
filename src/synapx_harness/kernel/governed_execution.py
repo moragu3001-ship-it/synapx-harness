@@ -76,7 +76,7 @@ from synapx_harness.contracts.runtime_models import (
     VerificationResult,
     WorkContract,
     build_source_revision_ref,
-    build_verification_result,
+    build_verification_result as _build_verification_result,
 )
 from synapx_harness.context.models import (
     CONTEXT_CONTRACT_TYPE,
@@ -816,7 +816,7 @@ def build_verification_result(
     outcome: VerificationOutcome,
 ) -> VerificationResult:
     """Wrap the VerificationOutcome into the canonical VerificationResult."""
-    return build_verification_result(
+    return _build_verification_result(
         work_contract_id=work_contract_id,
         verification_status=outcome.verification_status,
         evidence_status=outcome.evidence_status,
@@ -1009,6 +1009,17 @@ class GovernedExecutionResult:
     terminal_decision: Any = None
     terminalization_input: dict[str, object] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
+    # RQ8-R1-R2-R2 (D2/D4): process truth + stage suppression markers for the
+    # same-run receipt. These fields make launch failure and downstream
+    # stage suppression explicit on the public surface.
+    process_started: bool = True
+    failure_class: str | None = None
+    proposal_parsing_attempted: bool = False
+    mutation_attempted: bool = False
+    verification_attempted: bool = False
+    primary_failure_stage: str | None = None
+    primary_failure_class: str | None = None
+    primary_failure_message: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -1083,6 +1094,16 @@ class GovernedExecutionResult:
                 else self.terminal_decision
             ),
             "errors": list(self.errors),
+            # RQ8-R1-R2-R2 (D2/D4): same-run receipt fields for process truth
+            # and stage suppression.
+            "process_started": self.process_started,
+            "failure_class": self.failure_class,
+            "proposal_parsing_attempted": self.proposal_parsing_attempted,
+            "mutation_attempted": self.mutation_attempted,
+            "verification_attempted": self.verification_attempted,
+            "primary_failure_stage": self.primary_failure_stage,
+            "primary_failure_class": self.primary_failure_class,
+            "primary_failure_message": self.primary_failure_message,
         }
 
 
@@ -1165,6 +1186,11 @@ def run_governed_execution(
         else:
             before = capture_before_state(workspace_root, allowed_write_paths)
     except ValueError as exc:
+        before_source_revision: str = ""
+        try:
+            before_source_revision = before.source_revision  # type: ignore[possibly-unbound]
+        except (NameError, AttributeError):
+            before_source_revision = ""
         return _block(
             request=request,
             workspace_root=workspace_root,
@@ -1173,9 +1199,7 @@ def run_governed_execution(
             agent_session_id=agent_session_id,
             work_contract_id=work_contract_id,
             shared_understanding=shared_understanding,
-            pre_codex_source_revision=before.source_revision
-            if "before" in locals()
-            else "",
+            pre_codex_source_revision=before_source_revision,
         )
 
     work_contract = build_first_slice_work_contract(
@@ -1191,12 +1215,19 @@ def run_governed_execution(
     fixture_sha_before = before.fixture_sha_before_codex
     pre_codex_source_revision = fixture_sha_before
     agent_stderr_text: str = ""
+    agent_process_started: bool = True
+    agent_failure_class: str | None = None
+    primary_failure_stage: str | None = None
+    primary_failure_class: str | None = None
+    primary_failure_message: str | None = None
 
     if request.codex_stdout_override is not None:
         agent_stdout = request.codex_stdout_override
         codex_version: str | None = "test-override"
         agent_result_status = "DONE"
         codex_process_exit_code = 0
+        agent_process_started = True
+        agent_failure_class = "PROCESS_SUCCESS"
     else:
         adapter = request.adapter or _default_adapter(
             codex_runtime_factory=request.codex_runtime_factory,
@@ -1225,14 +1256,63 @@ def run_governed_execution(
         agent_stderr_text = agent_result.output.stderr or ""
         codex_version = agent_result.provider.version
         agent_result_status = agent_result.status.value
-        codex_process_exit_code = (
-            agent_result.process.exit_code
-            if agent_result.process is not None
-            else -1
-        )
+        if agent_result.process is not None:
+            codex_process_exit_code = agent_result.process.exit_code
+            agent_process_started = agent_result.process.process_started
+            agent_failure_class = agent_result.process.failure_class
+        else:
+            codex_process_exit_code = -1
+            agent_process_started = False
+            agent_failure_class = "PROCESS_LAUNCH_ERROR"
 
     agent_stdout_sha256 = _sha256_text(agent_stdout)
     agent_stderr_sha256 = _sha256_text(agent_stderr_text)
+
+    # RQ8-R1-R2-R2 (D4) failure precedence gate: any agent-process fatal
+    # (launch failure, timeout, cancellation, non-zero exit) short-circuits
+    # the proposal parser, mutation chain, and verification stage so the
+    # first fatal blocker remains authoritative. The launch error is
+    # preserved verbatim and downstream stages are NOT invoked.
+    if not agent_process_started or agent_result_status != "DONE":
+        primary_failure_stage = "AGENT_PROCESS"
+        if agent_failure_class:
+            primary_failure_class = str(agent_failure_class)
+        else:
+            primary_failure_class = (
+                "PROCESS_LAUNCH_ERROR"
+                if not agent_process_started
+                else "PROCESS_STARTED_EXIT_NONZERO"
+            )
+        failure_msg: str = f"agent_result_status={agent_result_status}"
+        if agent_result is not None and agent_result.failure is not None:  # type: ignore[possibly-unbound]
+            failure_msg = agent_result.failure.message  # type: ignore[union-attr]
+        primary_failure_message = (
+            f"{primary_failure_class}: {failure_msg}"
+        )
+        blocked = _block(
+            request=request,
+            workspace_root=workspace_root,
+            reason=primary_failure_message,
+            execution_identity=execution_identity,
+            agent_session_id=agent_session_id,
+            work_contract_id=work_contract_id,
+            shared_understanding=shared_understanding,
+            work_contract=work_contract,
+            pre_codex_source_revision=pre_codex_source_revision,
+            codex_process_exit_code=codex_process_exit_code,
+            codex_process_version=codex_version,
+            agent_stdout_sha256=agent_stdout_sha256,
+            agent_stderr_sha256=agent_stderr_sha256,
+            primary_failure_stage=primary_failure_stage,
+            primary_failure_class=primary_failure_class,
+            primary_failure_message=primary_failure_message,
+            process_started=agent_process_started,
+            failure_class=agent_failure_class,
+            verification_attempted=False,
+            mutation_attempted=False,
+            proposal_parsing_attempted=False,
+        )
+        return blocked
 
     # ----- Codex read-only proof (RQ4 §14) -----
     try:
@@ -1298,11 +1378,47 @@ def run_governed_execution(
         post_apply_source_revision = pre_apply_source_revision
 
     if not mutation.success:
+        verification_command = _effective_verification_command(
+            request=request, workspace_root=workspace_root
+        )
+        if verification_command is None:
+            # D3 fail-closed: no trustworthy verification command for this
+            # target repo. Surface a deterministic BLOCKED with the D3
+            # primary failure so the same-run receipt preserves the cause.
+            return _block(
+                request=request,
+                workspace_root=workspace_root,
+                reason=(
+                    "D3: no trustworthy verification command for target "
+                    "repository; verification stage not run"
+                ),
+                execution_identity=execution_identity,
+                agent_session_id=agent_session_id,
+                work_contract_id=work_contract_id,
+                shared_understanding=shared_understanding,
+                work_contract=work_contract,
+                pre_codex_source_revision=pre_codex_source_revision,
+                pre_apply_source_revision=pre_apply_source_revision,
+                post_apply_source_revision=post_apply_source_revision,
+                codex_process_exit_code=codex_process_exit_code,
+                codex_process_version=codex_version,
+                agent_stdout_sha256=agent_stdout_sha256,
+                agent_stderr_sha256=agent_stderr_sha256,
+                primary_failure_stage="VERIFICATION_COMMAND_RESOLUTION",
+                primary_failure_class="VERIFICATION_COMMAND_NOT_RESOLVED",
+                primary_failure_message=(
+                    "VERIFICATION_COMMAND_NOT_RESOLVED: "
+                    "no trustworthy target verification command detected"
+                ),
+                process_started=agent_process_started,
+                failure_class=agent_failure_class,
+                verification_attempted=False,
+                mutation_attempted=True,
+                proposal_parsing_attempted=True,
+            )
         verification = verify_workspace(
             repository_root=workspace_root,
-            verification_command=list(
-                request.verification_command or _default_verification_command()
-            ),
+            verification_command=verification_command,
             red_qualification_ref=red_qualification_ref,
             timeout_seconds=request.timeout_seconds,
         )
@@ -1323,7 +1439,7 @@ def run_governed_execution(
             execution_identity=execution_identity,
             proposed_outcome=TerminalDecision.FAILED.value,
         )
-        return GovernedExecutionResult(
+        result = GovernedExecutionResult(
             success=False,
             work_contract_id=work_contract_id,
             execution_identity=execution_identity,
@@ -1350,13 +1466,54 @@ def run_governed_execution(
             errors=[mutation.error or "mutation failed"]
             + list(mutation.validation_blockers),
         )
+        result.process_started = agent_process_started
+        result.failure_class = agent_failure_class
+        result.proposal_parsing_attempted = True
+        result.mutation_attempted = True
+        result.verification_attempted = True
+        return result
 
     # ----- Independent verification (RQ4 §20) -----
+    verification_command = _effective_verification_command(
+        request=request, workspace_root=workspace_root
+    )
+    if verification_command is None:
+        # D3 fail-closed on the positive path: never substitute the
+        # SynapX control-plane venv Python as the target verifier.
+        return _block(
+            request=request,
+            workspace_root=workspace_root,
+            reason=(
+                "D3: no trustworthy verification command for target "
+                "repository; verification stage not run"
+            ),
+            execution_identity=execution_identity,
+            agent_session_id=agent_session_id,
+            work_contract_id=work_contract_id,
+            shared_understanding=shared_understanding,
+            work_contract=work_contract,
+            pre_codex_source_revision=pre_codex_source_revision,
+            pre_apply_source_revision=pre_apply_source_revision,
+            post_apply_source_revision=post_apply_source_revision,
+            codex_process_exit_code=codex_process_exit_code,
+            codex_process_version=codex_version,
+            agent_stdout_sha256=agent_stdout_sha256,
+            agent_stderr_sha256=agent_stderr_sha256,
+            primary_failure_stage="VERIFICATION_COMMAND_RESOLUTION",
+            primary_failure_class="VERIFICATION_COMMAND_NOT_RESOLVED",
+            primary_failure_message=(
+                "VERIFICATION_COMMAND_NOT_RESOLVED: "
+                "no trustworthy target verification command detected"
+            ),
+            process_started=agent_process_started,
+            failure_class=agent_failure_class,
+            verification_attempted=False,
+            mutation_attempted=True,
+            proposal_parsing_attempted=True,
+        )
     verification = verify_workspace(
         repository_root=workspace_root,
-        verification_command=list(
-            request.verification_command or _default_verification_command()
-        ),
+        verification_command=verification_command,
         red_qualification_ref=red_qualification_ref,
         timeout_seconds=request.timeout_seconds,
     )
@@ -1429,12 +1586,27 @@ def _block(
     codex_process_version: str | None = None,
     agent_stdout_sha256: str | None = None,
     agent_stderr_sha256: str | None = None,
+    primary_failure_stage: str | None = None,
+    primary_failure_class: str | None = None,
+    primary_failure_message: str | None = None,
+    process_started: bool = False,
+    failure_class: str | None = None,
+    verification_attempted: bool = True,
+    mutation_attempted: bool = True,
+    proposal_parsing_attempted: bool = True,
 ) -> GovernedExecutionResult:
     """Build a BLOCKED GovernedExecutionResult for fail-closed paths.
 
     The Front Door never sees Agent DONE -- this is a presentation-time
     construction that emits a synthetic sealed envelope and a BLOCKED
     terminal decision so evidence lineage is preserved.
+
+    RQ8-R1-R2-R2 (D4): the terminal decision carries an explicit
+    ``primary_failure`` block so the first fatal blocker remains authoritative.
+    Stage suppression flags (``verification_attempted``,
+    ``mutation_attempted``, ``proposal_parsing_attempted``) are surfaced on
+    the result so the same-run receipt can prove dependent stages were
+    skipped.
     """
     identity = execution_identity or _generate_execution_identity(workspace_root)
     session_id = agent_session_id or _compute_agent_session_id()
@@ -1458,12 +1630,16 @@ def _block(
         or (workspace_root / ".synapx_red_evidence.json").as_posix()
     )
     verification = VerificationOutcome(
-        verification_status="FAIL",
-        evidence_status="INVALID",
+        verification_status="FAIL" if verification_attempted else "NOT_RUN",
+        evidence_status="INVALID" if verification_attempted else "NOT_RUN",
         active_blocker_count=1,
         command_result=CommandResult(
             command_id="blocked-0",
-            sanitized_command="blocked",
+            sanitized_command=(
+                "verification-attempted"
+                if verification_attempted
+                else "verification-not-run"
+            ),
             working_directory=str(workspace_root),
             started_at=_now_iso(),
             finished_at=_now_iso(),
@@ -1496,7 +1672,7 @@ def _block(
         execution_identity=identity,
         proposed_outcome=TerminalDecision.BLOCKED.value,
     )
-    return GovernedExecutionResult(
+    result = GovernedExecutionResult(
         success=False,
         work_contract_id=wcid,
         execution_identity=identity,
@@ -1522,13 +1698,132 @@ def _block(
         terminalization_input=terminalization_input,
         errors=[reason],
     )
+    # RQ8-R1-R2-R2 (D2/D4): attach the same-run-receipt layer so downstream
+    # consumers can distinguish launch/process truth from later diagnostics.
+    result.process_started = process_started
+    result.failure_class = failure_class
+    result.proposal_parsing_attempted = proposal_parsing_attempted
+    result.mutation_attempted = mutation_attempted
+    result.verification_attempted = verification_attempted
+    result.primary_failure_stage = primary_failure_stage
+    result.primary_failure_class = primary_failure_class
+    result.primary_failure_message = primary_failure_message
+    return result
+
+
+def _effective_verification_command(
+    *,
+    request: GovernedExecutionRequest,
+    workspace_root: Path,
+) -> list[str] | None:
+    """Pick the verification command actually used for the run.
+
+    Authority order (RQ8-R1-R2-R2 D3):
+
+      1. Explicit ``request.verification_command`` (caller-supplied)
+      2. :func:`resolve_target_verification_command` over the workspace
+      3. ``None`` (caller must fail closed)
+    """
+    if request.verification_command:
+        return list(request.verification_command)
+    return resolve_target_verification_command(workspace_root)
 
 
 def _default_verification_command() -> list[str]:
-    """Return the canonical first-slice verification command (pytest -q)."""
-    import sys as _sys
+    """Return the canonical first-slice verification command (pytest -q).
 
-    return [_sys.executable, "-m", "pytest", "-q"]
+    RQ8-R1-R2-R2 (D3): REMOVED. The SynapX control-plane ``sys.executable`` is
+    NEVER silently assumed to be the target repository verification
+    environment. Use :func:`resolve_target_verification_command` to obtain a
+    deterministic, repository-qualified command; fall closed when none is
+    trustworthy.
+
+    This function is retained as a hard-fail sentinel: any caller that still
+    asks for "the default" without going through the resolver surfaces a
+    loud D3 regression in the test suite.
+    """
+    raise RuntimeError(
+        "RQ8-R1-R2-R2 D3: _default_verification_command is removed; "
+        "use resolve_target_verification_command(repository_root) instead. "
+        "The SynapX control-plane venv is NOT the target verification "
+        "environment."
+    )
+
+
+def _read_text(path: Path, *, max_bytes: int = 65536) -> str | None:
+    """Read a small text file; return None on any IO/decode error."""
+    try:
+        data = path.read_bytes()[:max_bytes]
+    except OSError:
+        return None
+    try:
+        return data.decode("utf-8", "replace")
+    except Exception:
+        return None
+
+
+def _detect_uv_project(repository_root: Path) -> bool:
+    """True iff the repository is a uv-managed Python project.
+
+    Heuristic: presence of ``uv.lock`` (canonical uv lockfile). ``pyproject.toml``
+    alone is not sufficient because uv, poetry, and bare setuptools all emit
+    ``pyproject.toml``. The lockfile is uv-specific.
+    """
+    return (repository_root / "uv.lock").is_file()
+
+
+def _detect_poetry_project(repository_root: Path) -> bool:
+    """True iff the repository declares Poetry as its dependency manager.
+
+    Heuristic: ``pyproject.toml`` exists AND contains a ``[tool.poetry]`` table.
+    We deliberately do NOT look at ``poetry.lock`` because its absence during
+    a first-run bootstrap is normal.
+    """
+    text = _read_text(repository_root / "pyproject.toml")
+    if not text:
+        return False
+    return "[tool.poetry]" in text
+
+
+def resolve_target_verification_command(
+    repository_root: Path,
+) -> list[str] | None:
+    """Return a deterministic, repository-qualified verification command.
+
+    RQ8-R1-R2-R2 (D3): the SynapX control-plane runtime (``sys.executable``)
+    is NEVER silently assumed to be the target verification environment.
+
+    Authority order (Public Alpha scope):
+
+      1. Explicit verification command passed by the caller (handled by the
+         caller; this resolver is the default-discovery branch only).
+      2. Deterministic project detection:
+           - ``uv.lock`` present              -> ``["uv", "run", "pytest", "-q"]``
+           - ``pyproject.toml [tool.poetry]`` -> ``["poetry", "run", "pytest", "-q"]``
+           - ``pyproject.toml [project]``     -> ``["uv", "run", "pytest", "-q"]``
+             (modern packaging default; uv runs PEP 621 projects natively)
+           - ``tox.ini`` / ``noxfile.py``    -> FORBIDDEN without explicit
+             declaration; return ``None``.
+      3. Fail closed: return ``None``. The caller MUST surface a
+         verification-unavailable blocker, never silently substitute
+         ``sys.executable``.
+
+    The Harness venv Python is intentionally NEVER selected. If a project
+    really needs the SynapX venv Python as the verifier, the caller must
+    pass an explicit ``verification_command`` kwarg.
+    """
+    root = Path(repository_root).resolve()
+    if _detect_uv_project(root):
+        return ["uv", "run", "pytest", "-q"]
+    if _detect_poetry_project(root):
+        return ["poetry", "run", "pytest", "-q"]
+    text = _read_text(root / "pyproject.toml")
+    if text and "[project]" in text:
+        # PEP 621 project without an obvious dependency manager: prefer uv
+        # because it runs PEP 621 projects natively without a venv bootstrap.
+        return ["uv", "run", "pytest", "-q"]
+    # tox/nox and unknown environments fail closed.
+    return None
 
 
 __all__ = [

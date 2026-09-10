@@ -323,7 +323,10 @@ class CodexAdapter:
             provider_session_id=raw.provider_session_id,
         )
         process = ProcessResult(
-            exit_code=raw.exit_code, duration_ms=raw.duration_ms
+            exit_code=raw.exit_code,
+            duration_ms=raw.duration_ms,
+            process_started=raw.process_started,
+            failure_class=raw.failure_class,
         )
         stdout_red = redact_secrets(raw.stdout)
         stderr_red = redact_secrets(raw.stderr)

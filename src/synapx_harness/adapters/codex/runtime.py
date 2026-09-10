@@ -20,6 +20,23 @@ R2-02 runtime truth
 * A hard byte cap bounds memory; once the cap is exceeded we stop *appending*
   but keep *counting to EOF* so ``*_original_bytes`` is always exact.
 * Decode / redaction happens *after* capture, in byte order.
+
+RQ8-R1-R2-R2 (D1) process transport
+-----------------------------------
+* Large Codex instructions MUST NOT depend on OS argv capacity. Windows
+  CreateProcess has a hard argv ceiling (WinError 206 -- "The filename or
+  extension is too long"). The canonical transport is the Codex-official
+  stdin transport (``codex exec ... -`` reads the initial instruction from
+  stdin when the positional ``PROMPT`` is ``-``).
+* :class:`InvocationTransport` makes the choice explicit. The default is
+  :attr:`InvocationTransport.STDIN`; the instruction is carried in
+  :attr:`RuntimeInvocation.stdin_payload` and never embedded in
+  :attr:`RuntimeInvocation.command`.
+* :attr:`RuntimeInvocation.command` always carries ONLY fixed CLI tokens
+  (binary path + options); the instruction is NOT one of them.
+* :attr:`RawRuntimeResult.process_started` and
+  :attr:`RawRuntimeResult.failure_class` preserve the authoritative launch
+  outcome so downstream stages can short-circuit on launch failure (D2 / D4).
 """
 from __future__ import annotations
 
@@ -28,9 +45,18 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any
 
 from synapx_harness.adapters.codex.models import AgentRequest
+
+
+# Process failure classification (RQ8-R1-R2-R2 D2 -- launch failure truth).
+# These strings are stable, provider-neutral, and never inferred from hashes.
+PROCESS_LAUNCH_ERROR: str = "PROCESS_LAUNCH_ERROR"
+PROCESS_STARTED_EXIT_NONZERO: str = "PROCESS_STARTED_EXIT_NONZERO"
+PROCESS_TIMEOUT: str = "PROCESS_TIMEOUT"
+PROCESS_SUCCESS: str = "PROCESS_SUCCESS"
 
 # Secret patterns that must be scrubbed from captured stdout/stderr before they
 # become evidence. Conservative: only obvious credential shapes are masked.
@@ -99,9 +125,40 @@ def classify_probe_outcome(*, status: str, stderr: str, stdout: str) -> str:
     return "REPAIR_REQUIRED"
 
 
+class InvocationTransport(StrEnum):
+    """How the Codex instruction is delivered to the ``codex exec`` process.
+
+    * ``STDIN`` -- the instruction is written to the Codex process's stdin
+      via a real OS pipe (``stdin=subprocess.PIPE``). Codex's CLI accepts a
+      positional ``-`` argument as the PROMPT slot to mean "read from
+      stdin"; this is the Codex-official transport for large instructions.
+    * ``ARGV`` -- the instruction is embedded as the final element of
+      ``RuntimeInvocation.command`` after a ``--`` separator. This is
+      preserved for test seams and short-instruction compatibility but is
+      NOT used by the public governed path because OS argv limits (Windows
+      WinError 206) can hard-fail large instructions.
+    * ``INPUT_FILE`` -- reserved for a future Codex-official ``@file``
+      reference. Not currently emitted by :func:`build_invocation`; kept as
+      a stable enum value so contract surfaces can mention it without
+      churn.
+    """
+
+    STDIN = "STDIN"
+    ARGV = "ARGV"
+    INPUT_FILE = "INPUT_FILE"
+
+
 @dataclass
 class RuntimeInvocation:
-    """Provider-neutral description of a single Codex invocation."""
+    """Provider-neutral description of a single Codex invocation.
+
+    RQ8-R1-R2-R2 (D1): ``command`` MUST NOT carry the user instruction; the
+    instruction lives in ``stdin_payload`` and is delivered via the chosen
+    ``transport``. The default transport is :attr:`InvocationTransport.STDIN`
+    (Codex-official stdin transport) so instruction size cannot be bounded by
+    OS argv limits. ``ARGV`` is preserved as a deterministic opt-in for tests
+    and special callers; the public governed path never uses it.
+    """
 
     command: list[str]
     cwd: str
@@ -111,11 +168,23 @@ class RuntimeInvocation:
     max_stdout_bytes: int
     max_stderr_bytes: int
     provider_config: dict[str, Any] = field(default_factory=dict)
+    transport: InvocationTransport = InvocationTransport.STDIN
+    stdin_payload: str | None = None
 
 
 @dataclass
 class RawRuntimeResult:
-    """Raw, un-normalized runtime outcome (backend-internal, never Trust Core)."""
+    """Raw, un-normalized runtime outcome (backend-internal, never Trust Core).
+
+    RQ8-R1-R2-R2 (D2): ``process_started`` and ``failure_class`` carry the
+    authoritative launch/process outcome so downstream stages can short-circuit
+    on launch failure without inferring state from hashes. ``process_started``
+    is ``False`` iff ``subprocess.Popen`` raised (Windows ``WinError 206``
+    "filename too long", file-not-found, etc.). ``failure_class`` is one of
+    :data:`PROCESS_LAUNCH_ERROR`, :data:`PROCESS_TIMEOUT`,
+    :data:`PROCESS_STARTED_EXIT_NONZERO`, :data:`PROCESS_SUCCESS`, or
+    ``None`` when not yet classified.
+    """
 
     exit_code: int
     stdout: str
@@ -135,6 +204,9 @@ class RawRuntimeResult:
     stdout_captured_bytes: int = 0
     stderr_captured_bytes: int = 0
     truncated: bool = False
+    # RQ8-R1-R2-R2 (D2): authoritative process-start truth.
+    process_started: bool = True
+    failure_class: str | None = None
 
 
 def detect_codex_version(codex_bin: str = "codex") -> str | None:
@@ -156,7 +228,12 @@ def detect_codex_version(codex_bin: str = "codex") -> str | None:
     return (proc.stdout.strip() or None) or None
 
 
-def build_invocation(request: AgentRequest, codex_bin: str = "codex") -> RuntimeInvocation:
+def build_invocation(
+    request: AgentRequest,
+    codex_bin: str = "codex",
+    *,
+    transport: InvocationTransport | None = None,
+) -> RuntimeInvocation:
     """Translate a canonical ``AgentRequest`` into a ``codex exec`` invocation.
 
     R2-05: the bounded headless probe applies Codex's explicit repo-check bypass
@@ -167,10 +244,25 @@ def build_invocation(request: AgentRequest, codex_bin: str = "codex") -> Runtime
     I3-D1: ``provider_config["profile"]`` is forwarded as ``--profile`` to the
     Codex CLI when present.  This enables qualified profile binding without
     hard-coding any provider-specific value in the adapter.
+
+    RQ8-R1-R2-R2 (D1): the user instruction is NEVER embedded in argv. By
+    default the canonical Codex stdin transport is used: a positional ``-``
+    argument is passed as the PROMPT slot so Codex reads the initial
+    instruction from stdin; the instruction itself lives in
+    :attr:`RuntimeInvocation.stdin_payload`. This eliminates the Windows
+    ``WinError 206`` (filename/extension too long) failure mode that occurs
+    when a 34K+ proposal instruction is packed into argv.
+
+    Callers that explicitly opt into ``InvocationTransport.ARGV`` (e.g. test
+    seams) get the legacy argv behaviour where the instruction is the final
+    command element after ``--``.
     """
     cfg = request.invocation.provider_config or {}
     sandbox = str(cfg.get("sandbox", "read-only"))
     profile = cfg.get("profile")
+    effective_transport = (
+        transport if transport is not None else InvocationTransport.STDIN
+    )
     command: list[str] = [
         codex_bin,
         "exec",
@@ -185,9 +277,16 @@ def build_invocation(request: AgentRequest, codex_bin: str = "codex") -> Runtime
         "-s",
         sandbox,
         "--skip-git-repo-check",
-        "--",
-        request.task.instruction,
     ])
+    if effective_transport == InvocationTransport.ARGV:
+        # Legacy/test seam: instruction embedded in argv after ``--``.
+        command.extend(["--", request.task.instruction])
+        stdin_payload: str | None = None
+    else:
+        # Canonical Codex stdin transport: positional ``-`` reads from stdin.
+        command.extend(["--", "-"])
+        stdin_payload = request.task.instruction
+
     return RuntimeInvocation(
         command=command,
         cwd=request.workspace.root,
@@ -197,6 +296,8 @@ def build_invocation(request: AgentRequest, codex_bin: str = "codex") -> Runtime
         max_stdout_bytes=request.limits.max_stdout_bytes,
         max_stderr_bytes=request.limits.max_stderr_bytes,
         provider_config=cfg,
+        transport=effective_transport,
+        stdin_payload=stdin_payload,
     )
 
 
@@ -264,22 +365,52 @@ class SubprocessCodexRuntime:
         cancel_event: threading.Event | None,
     ) -> RawRuntimeResult:
         start = time.monotonic()
+        popen_kwargs: dict[str, Any] = {
+            "cwd": inv.cwd,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+        }
+        # RQ8-R1-R2-R2 (D1): stdin transport requires a real stdin pipe so the
+        # instruction payload can be written without relying on argv.
+        if inv.stdin_payload is not None:
+            popen_kwargs["stdin"] = subprocess.PIPE
         try:
-            proc = subprocess.Popen(
-                inv.command,
-                cwd=inv.cwd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
+            proc = subprocess.Popen(inv.command, **popen_kwargs)
         except (OSError, ValueError) as exc:
+            # RQ8-R1-R2-R2 (D2): Popen failure is NEVER a normal process exit.
+            # We preserve the authoritative launch failure with explicit
+            # ``process_started=False`` and ``failure_class=PROCESS_LAUNCH_ERROR``
+            # so downstream stages can short-circuit.
+            winerror = getattr(exc, "winerror", None)
+            message = str(exc)
+            if winerror is not None:
+                message = f"{message} (winerror={winerror})"
             return RawRuntimeResult(
                 exit_code=-1,
                 stdout="",
                 stderr="",
                 duration_ms=int((time.monotonic() - start) * 1000),
                 launch_error=True,
-                launch_error_message=str(exc),
+                launch_error_message=message,
+                process_started=False,
+                failure_class=PROCESS_LAUNCH_ERROR,
             )
+
+        # RQ8-R1-R2-R2 (D1): write the stdin payload BEFORE draining stdout/
+        # stderr so the Codex process can begin reading immediately. The pipe
+        # is closed after write to signal EOF; a BrokenPipeError means the
+        # Codex process exited before consuming stdin (treat as launch-stage
+        # failure classification, not normal completion).
+        stdin_stream = proc.stdin
+        if inv.stdin_payload is not None and stdin_stream is not None:
+            try:
+                stdin_stream.write(inv.stdin_payload.encode("utf-8", "replace"))
+                stdin_stream.close()
+            except (BrokenPipeError, OSError):
+                try:
+                    stdin_stream.close()
+                except OSError:
+                    pass
 
         # Concurrent drain: two reader threads keep both pipes moving so a large
         # output can never stall on the OS pipe buffer (R2-02).
@@ -347,10 +478,25 @@ class SubprocessCodexRuntime:
             stderr_captured_bytes=len(err["captured"]),
             truncated=out["truncated"] or err["truncated"],
             version=self.version(),
+            process_started=True,
+            failure_class=(
+                PROCESS_TIMEOUT
+                if timed_out
+                else (
+                    PROCESS_STARTED_EXIT_NONZERO
+                    if exit_code != 0
+                    else PROCESS_SUCCESS
+                )
+            ),
         )
 
 
 __all__ = [
+    "PROCESS_LAUNCH_ERROR",
+    "PROCESS_STARTED_EXIT_NONZERO",
+    "PROCESS_SUCCESS",
+    "PROCESS_TIMEOUT",
+    "InvocationTransport",
     "RawRuntimeResult",
     "RuntimeInvocation",
     "SubprocessCodexRuntime",
