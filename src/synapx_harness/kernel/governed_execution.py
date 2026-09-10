@@ -541,12 +541,22 @@ def _default_adapter(
     RQ4 §13: the positive path MUST use ``SubprocessCodexRuntime`` (the real
     Codex CLI). For tests we accept an injected factory that returns a
     runtime with the same ``invoke(inv, cancel_event)`` surface.
+
+    RQ8-R1-R2: the admitted executable identity is bound to the adapter
+    explicitly at construction time so it cannot drift between adapter
+    construction and actual ``subprocess.Popen`` launch. The ``getattr``
+    fallback preserves the existing test-double injection seam (test
+    doubles that expose no ``codex_bin`` attribute continue to fall back
+    to the bare token through the same path as before).
     """
     if codex_runtime_factory is None:
         backend: Any = SubprocessCodexRuntime()
         return CodexAdapter(backend=backend)
     backend = codex_runtime_factory()
-    return CodexAdapter(backend=backend)
+    return CodexAdapter(
+        backend=backend,
+        codex_bin=getattr(backend, "codex_bin", "codex"),
+    )
 
 
 def assert_codex_did_not_mutate(

@@ -22,6 +22,19 @@ R1 repairs
   cancellation *requested* but not confirmed -> FAILED with
   ``cancellation_uncertain=True``. A late DONE after confirmed cancellation
   stays CANCELLED (never DONE). Timeout stays TIMEOUT (never DONE).
+
+RQ8-R1-R2 anchor
+----------------
+The authoritative Codex executable identity MUST be bound to the adapter at
+construction time so it cannot drift between adapter construction and the
+actual ``subprocess.Popen`` call. The previous implementation relied on a
+dynamic ``self._backend.codex_bin`` lookup inside :meth:`execute`, which
+silently fell back to the bare ``"codex"`` token whenever the backend did not
+expose a ``codex_bin`` attribute. The new implementation accepts a sentinel
+for the ``codex_bin`` kwarg and snapshots the effective target once at
+``__init__`` time, preserving the existing test-double injection seam
+(``FakeCodexRuntime`` / ``StubRuntime`` have no ``codex_bin`` attribute and
+fall back to the bare name through the same path as before).
 """
 from __future__ import annotations
 
@@ -47,6 +60,12 @@ from synapx_harness.adapters.codex.runtime import (
     build_invocation,
     redact_secrets,
 )
+
+
+# Sentinel: caller did not pass an explicit ``codex_bin``. The effective value
+# is then derived from the backend (``getattr(self._backend, "codex_bin",
+# "codex")``).
+_NO_CODEX_BIN: Any = object()
 
 
 class CodexInterface(StrEnum):
@@ -99,7 +118,13 @@ class CodexAdapter:
         Must be ``OFFICIAL_HEADLESS_CLI``. ``INTERACTIVE_TUI`` and
         ``OFFICIAL_SDK_API`` are rejected (R1-03).
     codex_bin:
-        Executable name/path for the headless CLI.
+        Authoritative executable name/path for the headless CLI. If omitted,
+        the adapter inherits the backend's ``codex_bin`` attribute (with a
+        bare ``"codex"`` fallback for test doubles that expose no
+        ``codex_bin``). When provided, the value is snapshotted at
+        construction time so the invocation target cannot drift between
+        adapter construction and the actual ``subprocess.Popen`` call
+        (RQ8-R1-R2 anchor).
     """
 
     def __init__(
@@ -107,7 +132,7 @@ class CodexAdapter:
         backend: Any | None = None,
         *,
         interface: CodexInterface = SELECTED_INTERFACE,
-        codex_bin: str = "codex",
+        codex_bin: Any = _NO_CODEX_BIN,
     ) -> None:
         if interface in (
             CodexInterface.INTERACTIVE_TUI,
@@ -119,10 +144,35 @@ class CodexAdapter:
             )
         self.interface = interface
         if backend is None:
+            # No backend supplied: build the default runtime with the explicit
+            # ``codex_bin`` (or the bare ``"codex"`` fallback if the caller
+            # passed the sentinel).
+            if codex_bin is _NO_CODEX_BIN:
+                codex_bin = "codex"
             backend = SubprocessCodexRuntime(codex_bin=codex_bin)
         self._backend = backend
+        # RQ8-R1-R2: bind the executable identity at construction time so it
+        # is immune to later mutation of the backend object. Explicit
+        # ``codex_bin`` always wins; otherwise inherit from the backend
+        # (with the legacy bare fallback for test doubles).
+        if codex_bin is _NO_CODEX_BIN:
+            self._effective_codex_bin: str = getattr(
+                self._backend, "codex_bin", "codex"
+            )
+        else:
+            self._effective_codex_bin = str(codex_bin)
         self._cancel_flags: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
+
+    @property
+    def codex_bin(self) -> str:
+        """Authoritative Codex executable target bound at construction time.
+
+        RQ8-R1-R2 invariant: this value MUST equal the resolved executable
+        selected by ``discover_codex()`` and propagated verbatim through the
+        adapter / ``build_invocation`` / ``subprocess.Popen`` chain.
+        """
+        return self._effective_codex_bin
 
     # -- CodexAdapterContract ------------------------------------------------
 
@@ -158,7 +208,9 @@ class CodexAdapter:
         # be honoured as "requested but unconfirmed" -> FAILED + uncertain.
         cancel_before = cancel_event.is_set()
 
-        inv: RuntimeInvocation = build_invocation(request, self._backend_bin())
+        inv: RuntimeInvocation = build_invocation(
+            request, self._effective_codex_bin
+        )
         raw = self._backend.invoke(inv, cancel_event)
 
         cancel_after = cancel_event.is_set()
@@ -178,7 +230,10 @@ class CodexAdapter:
     # -- internals -----------------------------------------------------------
 
     def _backend_bin(self) -> str:
-        return getattr(self._backend, "codex_bin", "codex")
+        # Legacy dynamic lookup; preserved so external readers (and any
+        # older tests) keep working. The canonical authoritative value is
+        # :attr:`codex_bin`, which is bound at construction time.
+        return self._effective_codex_bin
 
     def _ensure_cancel_event(
         self, *, job_id: str, task_id: str, attempt_id: str
