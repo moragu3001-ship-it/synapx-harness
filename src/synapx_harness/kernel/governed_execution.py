@@ -619,6 +619,11 @@ def execute_mutation_chain(
     Mirrors :class:`GovernedMutationExecutor.execute` but kept as a free
     function so the composition layer can stay thin and so the chain is
     testable seam by seam.
+
+    RQ8-R1-R2-R2-R1 (Q2): ``mutation_attempted`` is set to ``True`` ONLY
+    when the controlled applicator is invoked; any earlier short-circuit
+    leaves it ``False``. ``proposal_parsing_attempted`` is set to ``True``
+    as soon as the parser is invoked.
     """
     if admission_gate is None or path_gate is None or applicator is None or parser is None:
         (
@@ -643,6 +648,8 @@ def execute_mutation_chain(
             proposal=proposal,
             validation_blockers=[],
             error=f"Proposal INVALID: {proposal.parse_error}",
+            proposal_parsing_attempted=True,
+            mutation_attempted=False,
         )
 
     blockers = validate_mutation_proposal(
@@ -661,6 +668,8 @@ def execute_mutation_chain(
             proposal=proposal,
             validation_blockers=blockers,
             error="Proposal validation FAILED: " + "; ".join(blockers),
+            proposal_parsing_attempted=True,
+            mutation_attempted=False,
         )
 
     admission = admission_gate.admit(
@@ -681,6 +690,8 @@ def execute_mutation_chain(
             proposal=proposal,
             validation_blockers=[],
             error=f"Admission DENIED: {admission.denied_reason}",
+            proposal_parsing_attempted=True,
+            mutation_attempted=False,
         )
 
     path_receipt = path_gate.check(
@@ -699,6 +710,8 @@ def execute_mutation_chain(
             proposal=proposal,
             validation_blockers=[],
             error=f"PathGate DENIED: {path_receipt.reason}",
+            proposal_parsing_attempted=True,
+            mutation_attempted=False,
         )
 
     apply_receipt = applicator.apply(
@@ -720,6 +733,8 @@ def execute_mutation_chain(
             validation_blockers=[],
             error=f"Apply failed: write_count = 0 "
             f"({apply_receipt.denied_reason})",
+            proposal_parsing_attempted=True,
+            mutation_attempted=True,
         )
 
     return MutationExecutionResult(
@@ -730,6 +745,8 @@ def execute_mutation_chain(
         apply_receipt=apply_receipt,
         proposal=proposal,
         validation_blockers=[],
+        proposal_parsing_attempted=True,
+        mutation_attempted=True,
     )
 
 
@@ -1200,6 +1217,11 @@ def run_governed_execution(
             work_contract_id=work_contract_id,
             shared_understanding=shared_understanding,
             pre_codex_source_revision=before_source_revision,
+            process_started=False,
+            failure_class=None,
+            verification_attempted=False,
+            mutation_attempted=False,
+            proposal_parsing_attempted=False,
         )
 
     work_contract = build_first_slice_work_contract(
@@ -1378,6 +1400,58 @@ def run_governed_execution(
         post_apply_source_revision = pre_apply_source_revision
 
     if not mutation.success:
+        # RQ8-R1-R2-R2-R1 (Q2): verification only runs when the controlled
+        # applicator was actually invoked (``mutation.mutation_attempted is
+        # True``). When the chain short-circuited at parse / validation /
+        # admission / path-gate, the applicator never ran and the
+        # verification stage MUST also be skipped so the same-run receipt
+        # carries truthful stage suppression.
+        if not mutation.mutation_attempted:
+            # Parse / validation / admission / path-gate failure. The
+            # primary failure is the mutation chain itself; verification
+            # never ran.
+            primary_failure_stage = "PROPOSAL_PARSE_OR_ADMISSION"
+            primary_failure_class = "PROPOSAL_REJECTED"
+            primary_failure_message = (
+                mutation.error or "proposal rejected before apply"
+            )
+            # Preserve any admission/path-gate receipts that were
+            # already issued before the short-circuit (Q2: lineage must
+            # survive even when apply never ran). The Q2 short-circuit
+            # is about *stage truth* (mutation_attempted=False), not about
+            # dropping legitimate pre-apply receipts.
+            pre_apply_admission = mutation.admission_receipt
+            pre_apply_path_receipt = mutation.path_gate_receipt
+            return _block(
+                request=request,
+                workspace_root=workspace_root,
+                reason=primary_failure_message,
+                execution_identity=execution_identity,
+                agent_session_id=agent_session_id,
+                work_contract_id=work_contract_id,
+                shared_understanding=shared_understanding,
+                work_contract=work_contract,
+                pre_codex_source_revision=pre_codex_source_revision,
+                pre_apply_source_revision=pre_apply_source_revision,
+                post_apply_source_revision=post_apply_source_revision,
+                codex_process_exit_code=codex_process_exit_code,
+                codex_process_version=codex_version,
+                agent_stdout_sha256=agent_stdout_sha256,
+                agent_stderr_sha256=agent_stderr_sha256,
+                primary_failure_stage=primary_failure_stage,
+                primary_failure_class=primary_failure_class,
+                primary_failure_message=primary_failure_message,
+                process_started=agent_process_started,
+                failure_class=agent_failure_class,
+                verification_attempted=False,
+                mutation_attempted=mutation.mutation_attempted,
+                proposal_parsing_attempted=mutation.proposal_parsing_attempted,
+                proposal=mutation.proposal,
+                admission_receipt=pre_apply_admission,
+                path_gate_receipt=pre_apply_path_receipt,
+            )
+        # Applicator ran but produced zero writes -> verify normally so the
+        # post-apply state is honestly checked.
         verification_command = _effective_verification_command(
             request=request, workspace_root=workspace_root
         )
@@ -1413,8 +1487,8 @@ def run_governed_execution(
                 process_started=agent_process_started,
                 failure_class=agent_failure_class,
                 verification_attempted=False,
-                mutation_attempted=True,
-                proposal_parsing_attempted=True,
+                mutation_attempted=mutation.mutation_attempted,
+                proposal_parsing_attempted=mutation.proposal_parsing_attempted,
             )
         verification = verify_workspace(
             repository_root=workspace_root,
@@ -1468,8 +1542,8 @@ def run_governed_execution(
         )
         result.process_started = agent_process_started
         result.failure_class = agent_failure_class
-        result.proposal_parsing_attempted = True
-        result.mutation_attempted = True
+        result.proposal_parsing_attempted = mutation.proposal_parsing_attempted
+        result.mutation_attempted = mutation.mutation_attempted
         result.verification_attempted = True
         return result
 
@@ -1508,8 +1582,8 @@ def run_governed_execution(
             process_started=agent_process_started,
             failure_class=agent_failure_class,
             verification_attempted=False,
-            mutation_attempted=True,
-            proposal_parsing_attempted=True,
+            mutation_attempted=mutation.mutation_attempted,
+            proposal_parsing_attempted=mutation.proposal_parsing_attempted,
         )
     verification = verify_workspace(
         repository_root=workspace_root,
@@ -1541,7 +1615,7 @@ def run_governed_execution(
         ),
     )
 
-    return GovernedExecutionResult(
+    result = GovernedExecutionResult(
         success=bool(decision.decision == TerminalDecision.COMPLETED.value),
         work_contract_id=work_contract_id,
         execution_identity=execution_identity,
@@ -1567,6 +1641,15 @@ def run_governed_execution(
         terminalization_input=terminalization_input,
         errors=[],
     )
+    # RQ8-R1-R2-R2-R1 (Q2): carry truthful stage truth on the positive path
+    # as well. The mutation chain ran to completion and the independent
+    # verifier ran the resolved command.
+    result.process_started = agent_process_started
+    result.failure_class = agent_failure_class
+    result.proposal_parsing_attempted = mutation.proposal_parsing_attempted
+    result.mutation_attempted = mutation.mutation_attempted
+    result.verification_attempted = True
+    return result
 
 
 def _block(
@@ -1592,8 +1675,11 @@ def _block(
     process_started: bool = False,
     failure_class: str | None = None,
     verification_attempted: bool = True,
-    mutation_attempted: bool = True,
+    mutation_attempted: bool = False,
     proposal_parsing_attempted: bool = True,
+    proposal: PatchProposal | None = None,
+    admission_receipt: AdmissionReceipt | None = None,
+    path_gate_receipt: PathGateReceipt | None = None,
 ) -> GovernedExecutionResult:
     """Build a BLOCKED GovernedExecutionResult for fail-closed paths.
 
@@ -1688,9 +1774,9 @@ def _block(
         agent_stdout_sha256=agent_stdout_sha256,
         agent_stderr_sha256=agent_stderr_sha256,
         allowed_write_paths=list(derive_allowed_write_paths(request.task)),
-        proposal=None,
-        admission_receipt=None,
-        path_gate_receipt=None,
+        proposal=proposal,
+        admission_receipt=admission_receipt,
+        path_gate_receipt=path_gate_receipt,
         apply_receipt=None,
         verification=verification,
         sealed_evidence=sealed,
@@ -1793,20 +1879,26 @@ def resolve_target_verification_command(
     RQ8-R1-R2-R2 (D3): the SynapX control-plane runtime (``sys.executable``)
     is NEVER silently assumed to be the target verification environment.
 
+    RQ8-R1-R2-R2-R1 (Q1) authoritative rule: only the canonical
+    dependency-manager markers below are sufficient evidence to pick a
+    verifier. PEP 621 ``[project]`` alone is NOT authoritative for uv: it
+    is shared by poetry, hatchling, setuptools, pdm, etc. and silently
+    inferring ``uv`` from it would silently mis-attribute the verifier on
+    any non-uv project that declares ``[project]``.
+
     Authority order (Public Alpha scope):
 
       1. Explicit verification command passed by the caller (handled by the
          caller; this resolver is the default-discovery branch only).
-      2. Deterministic project detection:
+      2. Deterministic project detection (any of the following is sufficient
+         AUTHORITATIVE evidence; nothing else is):
            - ``uv.lock`` present              -> ``["uv", "run", "pytest", "-q"]``
            - ``pyproject.toml [tool.poetry]`` -> ``["poetry", "run", "pytest", "-q"]``
-           - ``pyproject.toml [project]``     -> ``["uv", "run", "pytest", "-q"]``
-             (modern packaging default; uv runs PEP 621 projects natively)
-           - ``tox.ini`` / ``noxfile.py``    -> FORBIDDEN without explicit
-             declaration; return ``None``.
-      3. Fail closed: return ``None``. The caller MUST surface a
-         verification-unavailable blocker, never silently substitute
-         ``sys.executable``.
+      3. Anything else (``[project]`` only, ``requirements.txt`` only,
+         ``setup.py`` only, ``pytest.ini`` only, ``tox.ini``, ``noxfile.py``,
+         bare Python files, ...): fail closed and return ``None``. The
+         caller MUST surface a verification-unavailable blocker, never
+         silently substitute ``sys.executable``.
 
     The Harness venv Python is intentionally NEVER selected. If a project
     really needs the SynapX venv Python as the verifier, the caller must
@@ -1817,12 +1909,8 @@ def resolve_target_verification_command(
         return ["uv", "run", "pytest", "-q"]
     if _detect_poetry_project(root):
         return ["poetry", "run", "pytest", "-q"]
-    text = _read_text(root / "pyproject.toml")
-    if text and "[project]" in text:
-        # PEP 621 project without an obvious dependency manager: prefer uv
-        # because it runs PEP 621 projects natively without a venv bootstrap.
-        return ["uv", "run", "pytest", "-q"]
-    # tox/nox and unknown environments fail closed.
+    # PEP 621 ``[project]`` alone is no longer authoritative for uv.
+    # tox/nox/requirements-only/setup.py-only/unknown: fail closed.
     return None
 
 

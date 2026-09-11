@@ -841,7 +841,18 @@ class ControlledPatchApplicator:
 
 @dataclass
 class MutationExecutionResult:
-    """Result of GovernedMutationExecutor.execute()."""
+    """Result of GovernedMutationExecutor.execute().
+
+    RQ8-R1-R2-R2-R1 (Q2): ``mutation_attempted`` carries the truthful
+    answer to "did the mutation applicator actually run for this run?".
+    It is set to ``True`` ONLY when :class:`ControlledPatchApplicator.apply`
+    was invoked; any earlier short-circuit (parse failure, validation
+    blockers, admission DENY, path-gate DENY) leaves it ``False`` so the
+    same-run receipt can prove the applicator was never reached.
+    ``proposal_parsing_attempted`` is set to ``True`` whenever the
+    structured parser was invoked; a malformed/empty agent stdout still
+    counts as a parsing attempt (the parser was called, it just rejected).
+    """
     success: bool
     work_contract_id: str
     admission_receipt: AdmissionReceipt | None
@@ -850,6 +861,8 @@ class MutationExecutionResult:
     proposal: PatchProposal | None
     validation_blockers: list[str]
     error: str | None = None
+    proposal_parsing_attempted: bool = False
+    mutation_attempted: bool = False
 
 
 class GovernedMutationExecutor:
@@ -894,7 +907,16 @@ class GovernedMutationExecutor:
         current_source_revision_at_apply: str,
         agent_stdout: str,
     ) -> MutationExecutionResult:
-        """Execute the full mutation chain (RQ4-R2-C2 strict, single-file)."""
+        """Execute the full mutation chain (RQ4-R2-C2 strict, single-file).
+
+        RQ8-R1-R2-R2-R1 (Q2): ``mutation_attempted`` is set to ``True`` ONLY
+        when :class:`ControlledPatchApplicator.apply` is invoked. Any
+        earlier short-circuit (parse failure, validation blockers,
+        admission DENY, path-gate DENY) leaves it ``False`` so the
+        same-run receipt carries truthful stage truth.
+        ``proposal_parsing_attempted`` is set to ``True`` as soon as the
+        structured parser is invoked, regardless of its verdict.
+        """
         # Step 1: STRICT parse (NOT legacy heuristic). Parse must precede
         # admission: an invalid proposal must never produce an admission
         # receipt.
@@ -909,6 +931,8 @@ class GovernedMutationExecutor:
                 proposal=proposal,
                 validation_blockers=[],
                 error=f'Proposal INVALID: {proposal.parse_error}',
+                proposal_parsing_attempted=True,
+                mutation_attempted=False,
             )
 
         # Step 2: Deterministic proposal validation. Validation must precede
@@ -933,6 +957,8 @@ class GovernedMutationExecutor:
                 proposal=proposal,
                 validation_blockers=blockers,
                 error='Proposal validation FAILED: ' + '; '.join(blockers),
+                proposal_parsing_attempted=True,
+                mutation_attempted=False,
             )
 
         # Step 3: Admission. Only after the proposal is structurally and
@@ -956,6 +982,8 @@ class GovernedMutationExecutor:
                 proposal=proposal,
                 validation_blockers=[],
                 error=f'Admission DENIED: {admission.denied_reason}',
+                proposal_parsing_attempted=True,
+                mutation_attempted=False,
             )
 
         # Step 4: PathGate
@@ -976,9 +1004,13 @@ class GovernedMutationExecutor:
                 proposal=proposal,
                 validation_blockers=[],
                 error=f'PathGate DENIED: {path_gate.reason}',
+                proposal_parsing_attempted=True,
+                mutation_attempted=False,
             )
 
-        # Step 5: Apply (single-file, all preconditions first)
+        # Step 5: Apply (single-file, all preconditions first).
+        # The applicator is the ONLY stage that flips ``mutation_attempted``
+        # to ``True`` (Q2 stage truth).
         apply_receipt = self._applicator.apply(
             proposal=proposal,
             path_gate_receipt=path_gate,
@@ -998,6 +1030,8 @@ class GovernedMutationExecutor:
                 proposal=proposal,
                 validation_blockers=[],
                 error=f'Apply failed: write_count = 0 ({apply_receipt.denied_reason})',
+                proposal_parsing_attempted=True,
+                mutation_attempted=True,
             )
 
         return MutationExecutionResult(
@@ -1008,6 +1042,8 @@ class GovernedMutationExecutor:
             apply_receipt=apply_receipt,
             proposal=proposal,
             validation_blockers=[],
+            proposal_parsing_attempted=True,
+            mutation_attempted=True,
         )
 
 

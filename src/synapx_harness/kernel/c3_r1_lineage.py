@@ -47,7 +47,10 @@ def _maybe_dict(obj: Any) -> dict[str, object] | None:
                 pass
     import dataclasses as _dc
 
-    if _dc.is_dataclass(obj):
+    # is_dataclass() is also True for dataclass *classes*; asdict() needs an
+    # instance, so exclude the type case explicitly (truthful narrowing, no
+    # runtime behaviour change: callers only pass instances or dicts).
+    if _dc.is_dataclass(obj) and not isinstance(obj, type):
         try:
             return _dc.asdict(obj)
         except Exception:
@@ -119,12 +122,19 @@ def build_lineage_envelope(
         },
         # ----- Agent request lineage -----
         "agent_request": agent_request_identity,
-        # ----- Codex process (real run) -----
+        # ----- Codex process (real run, RQ8-R1-R2-R2 D2 surface) -----
+        # The ``process_started`` / ``failure_class`` slots are the
+        # authoritative launch/process outcome of the Codex subprocess.
+        # Use ``getattr`` so the envelope stays compatible with the
+        # historical R2 ``Stub`` test doubles that do not declare these
+        # attributes (default ``None`` -> "unknown").
         "codex_process": {
             "version": result.codex_process_version,
             "exit_code": result.codex_process_exit_code,
             "stdout_sha256": result.agent_stdout_sha256,
             "stderr_sha256": result.agent_stderr_sha256,
+            "process_started": getattr(result, "process_started", None),
+            "failure_class": getattr(result, "failure_class", None),
         },
         # ----- Source revision chronology (RQ4 §5) -----
         "source_revisions": {
@@ -134,17 +144,63 @@ def build_lineage_envelope(
             "head_sha": head_sha,
             "tree_sha": tree_sha,
         },
-        # ----- PatchProposal -----
-        "patch_proposal": _maybe_dict(result.proposal),
-        # ----- Mutation receipts -----
+        # ----- PatchProposal (RQ8-R1-R2-R2-R1 Q2 stage truth) -----
+        # ``parsing_attempted`` records whether the structured parser was
+        # invoked for this run; ``valid`` carries its verdict. The slot is
+        # always a dict so downstream consumers can read
+        # ``patch_proposal.parsing_attempted`` uniformly without having to
+        # branch on ``None``.
+        "patch_proposal": {
+            "valid": result.proposal.valid if result.proposal is not None else None,
+            "paths": list(result.proposal.paths) if result.proposal is not None else [],
+            "sha256": result.proposal.sha256 if result.proposal is not None else None,
+            "canonical_patch_sha256": (
+                result.proposal.canonical_patch_sha256
+                if result.proposal is not None
+                else None
+            ),
+            "raw_input_sha256": (
+                result.proposal.raw_input_sha256
+                if result.proposal is not None
+                else None
+            ),
+            "parsing_attempted": getattr(result, "proposal_parsing_attempted", False),
+        },
+        # ----- Mutation receipts (kept at envelope top level for legacy
+        # R2 consumers; Q2 stage truth is duplicated in the ``mutation``
+        # block below) -----
         "admission_receipt": _maybe_dict(admission),
         "path_gate_receipt": _maybe_dict(path_receipt),
         "apply_receipt": _maybe_dict(apply),
-        # ----- Verification receipt -----
+        # ----- Mutation stage truth (Q2) -----
+        "mutation": {
+            "attempted": getattr(result, "mutation_attempted", False),
+        },
+        # ----- Verification stage truth + resolver authority -----
+        # ``verification_attempted`` is the truthful answer to "did the
+        # independent verifier actually run for this run?".
         "verification": (
-            result.verification.to_dict()
-            if result.verification is not None
-            else None
+            None
+            if result.verification is None
+            else {
+                "attempted": getattr(result, "verification_attempted", False),
+                "verification_status": result.verification.verification_status,
+                "evidence_status": result.verification.evidence_status,
+                "active_blocker_count": result.verification.active_blocker_count,
+                "red_qualified": result.verification.red_qualified,
+                "red_qualification_ref": result.verification.red_qualification_ref,
+                "command": (
+                    result.verification.command_result.sanitized_command
+                    if result.verification.command_result is not None
+                    else None
+                ),
+                "command_source": (
+                    "explicit_override"
+                    if getattr(result, "verification_command", None)
+                    is not None
+                    else "resolver"
+                ),
+            }
         ),
         # ----- Sealed evidence -----
         "sealed_evidence": {
@@ -154,12 +210,15 @@ def build_lineage_envelope(
             "sealed_at": sealed.get("sealed_at"),
             "sealed_identity": sealed_identity,
         },
-        # ----- Terminal decision -----
+        # ----- Terminal decision (RQ8-R1-R2-R2-R1 D4 primary failure surface) -----
         "terminal_decision": {
             "work_contract_id": terminal_record.get("work_contract_id")
             or result.work_contract_id,
             "decision": terminal_record.get("decision"),
             "reason": terminal_record.get("reason"),
+            "primary_failure_stage": getattr(result, "primary_failure_stage", None),
+            "primary_failure_class": getattr(result, "primary_failure_class", None),
+            "primary_failure_message": getattr(result, "primary_failure_message", None),
         },
         # ----- Errors (kept for transparency; non-empty means non-COMPLETED) -----
         "errors": list(result.errors),

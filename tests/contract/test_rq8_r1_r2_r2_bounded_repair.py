@@ -718,9 +718,19 @@ class TestD3VerificationResolver:
     def test_fixture_a_pep621_project_falls_back_to_uv(
         self, tmp_path: Path
     ) -> None:
+        """RQ8-R1-R2-R2-R1 (Q1): a bare ``[project]`` table is NOT
+        authoritative evidence for uv. The resolver MUST fail closed and
+        return ``None`` so the caller surfaces a verification-unavailable
+        blocker rather than silently mis-attribute the verifier.
+
+        The earlier R2 behaviour (``[project] -> uv``) is forbidden because
+        the same marker is shared by poetry, hatchling, setuptools, pdm,
+        and many non-uv projects; silently selecting ``uv`` would silently
+        mis-route the independent verifier.
+        """
         repo = self._make_pep621_repo(tmp_path)
         cmd = resolve_target_verification_command(repo)
-        assert cmd == ["uv", "run", "pytest", "-q"]
+        assert cmd is None
 
     def test_fixture_c_unknown_environment_fails_closed(
         self, tmp_path: Path
@@ -754,17 +764,44 @@ class TestD3VerificationResolver:
     def test_unknown_env_blocks_run_governed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """End-to-end: unknown target env MUST fail closed at the run level."""
+        """End-to-end: unknown target env MUST fail closed at the run level.
+
+        RQ8-R1-R2-R2-R1 (Q2) stage-truth interaction: the proposal MUST be a
+        valid structured proposal so the parse stage passes and the run
+        reaches the verification-command resolution stage (D3). The earlier
+        R2 fixture used a free-form JSON payload that the structured parser
+        rejects as ``PROPOSAL_REJECTED``; under Q2 the same scenario no
+        longer reaches the D3 gate, so the canonical structured encoding is
+        required here to keep the test exercising the intended D3 path.
+        """
         repo = self._make_unknown_repo(tmp_path)
-        # Stub adapter that returns a synthetic DONE.
         from synapx_harness.adapters.codex.fake import FakeCodexRuntime, FakeScenario
 
         # Need a real allowed-write target so capture_before_state passes.
         (repo / "x.py").write_text("def add(a, b): return a + b\n")
+        # Valid structured proposal so the parse stage passes and the run
+        # actually reaches the verification-command resolution stage (D3).
+        # Uses the canonical ``mutation_proposal_contract.PROPOSAL_BEGIN/END``
+        # framing (not the placeholder strings R2 tests used).
+        from synapx_harness.kernel.mutation_proposal_contract import (
+            PROPOSAL_BEGIN,
+            PROPOSAL_END,
+        )
+        proposal = (
+            f"{PROPOSAL_BEGIN}\n"
+            "FILE:x.py\n"
+            "<<<< OLD\n"
+            "def add(a, b): return a + b\n"
+            ">>>> OLD\n"
+            "<<<< NEW\n"
+            "def add(a, b): return a + b + 0\n"
+            ">>>> NEW\n"
+            f"{PROPOSAL_END}"
+        )
         adapter = CodexAdapter(
             backend=FakeCodexRuntime(
                 scenario=FakeScenario.SUCCESS,
-                stdout='{"patch":"x","paths":["x.py"]}\n',
+                stdout=proposal,
             )
         )
         task = "Allowed write paths:\n  - x.py\n"
@@ -772,9 +809,12 @@ class TestD3VerificationResolver:
             workspace_root=repo,
             task=task,
             adapter=adapter,
+            red_qualified_override=True,
         )
         result = run_governed_execution(req)
-        # The D3 gate MUST surface the failure.
+        # The D3 gate MUST surface the failure (parse passes, mutation
+        # chain passes the gates, but the unknown target repo has no
+        # trustworthy verifier command).
         assert result.primary_failure_class == "VERIFICATION_COMMAND_NOT_RESOLVED"
         assert result.primary_failure_stage == "VERIFICATION_COMMAND_RESOLUTION"
         assert result.verification_attempted is False
@@ -831,8 +871,19 @@ class TestD4FailurePrecedence:
     def test_t19_proposal_parse_failure_no_mutation(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """RQ8-R1-R2-R2-R1 (Q2) stage-truth repair.
+
+        A proposal parse failure is a pre-applicator short-circuit. The
+        controlled applicator MUST NOT have been invoked, ``mutation_attempted``
+        MUST be ``False``, and the verification stage MUST also be skipped
+        (``verification_attempted is False``). Only ``proposal_parsing_attempted``
+        is ``True`` because the structured parser was actually called.
+        """
         from synapx_harness.adapters.codex.fake import FakeCodexRuntime, FakeScenario
 
+        # Need a real allowed-write target so capture_before_state passes
+        # and the run reaches the proposal-parse stage.
+        (tmp_path / "x.py").write_text("def add(a, b): return a + b\n")
         # Adapter that emits DONE but with malformed stdout -> proposal parse failure.
         adapter = CodexAdapter(
             backend=FakeCodexRuntime(
@@ -864,9 +915,13 @@ class TestD4FailurePrecedence:
         result = run_governed_execution(req)
         # Apply MUST NOT have been invoked.
         assert apply_calls == []
-        # Proposal parser WAS attempted (this is a parse failure, not a gate failure).
+        # Stage truth (Q2): the parser was attempted, but mutation and
+        # verification were not. The previous R2 claim that
+        # ``mutation_attempted is True`` on a parse failure was wrong
+        # and is repaired here.
         assert result.proposal_parsing_attempted is True
-        assert result.mutation_attempted is True
+        assert result.mutation_attempted is False
+        assert result.verification_attempted is False
 
     def test_t20_mutation_admission_failure_no_apply(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

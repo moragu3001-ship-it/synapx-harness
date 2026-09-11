@@ -86,6 +86,8 @@ class FakeCodexRuntime:
                 duration_ms=0,
                 launch_error=True,
                 launch_error_message=self.launch_error_message,
+                process_started=False,
+                failure_class="PROCESS_LAUNCH_ERROR",
             )
         if self.scenario == FakeScenario.TIMEOUT:
             return RawRuntimeResult(
@@ -252,6 +254,8 @@ class FakeCodexRuntime:
             truncated=out_trunc or err_trunc,
             provider_session_id=self.provider_session_id,
             version=self.fake_version,
+            process_started=True,
+            failure_class="PROCESS_SUCCESS",
         )
 
 
