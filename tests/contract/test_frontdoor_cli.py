@@ -490,11 +490,16 @@ class TestRQ3R2Doctor:
 
 class TestRQ3R2FrontDoorDefaultProvider:
     def test_default_runtime_resolves_real_bridge(self, tmp_path: Path) -> None:
+        # RQ8-P0 authority convergence: the default entry drives the
+        # canonical governed execution, so the default runtime is the
+        # governed bridge (the same bridge used by ``synapx run``).
         from synapx_harness.cli.frontdoor import _build_runtime
-        from synapx_harness.cli.runtime_bridge import FrontDoorRuntimeBridge
+        from synapx_harness.cli.governed_runtime_bridge import (
+            GovernedFrontDoorRuntimeBridge,
+        )
 
         rt = _build_runtime(tmp_path)
-        assert isinstance(rt, FrontDoorRuntimeBridge)
+        assert isinstance(rt, GovernedFrontDoorRuntimeBridge)
 
     def test_frontdoor_does_not_use_fake_codex(self) -> None:
         frontdoor_path = (

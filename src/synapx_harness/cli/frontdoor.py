@@ -1,26 +1,27 @@
-"""SynapX Harness Front Door (RQ3-R2 bounded repair).
+"""SynapX Harness Front Door (RQ8-P0 bounded repair).
 
 Lane A POST-H2 Public Alpha implementation. Public human entry layer.
 
-The Front Door is intentionally minimal:
+The Front Door is intentionally minimal and presentation-only:
 
 *  It does NOT probe the supported agent binary directly. Discovery is
-   delegated to ``synapx_harness.cli.runtime_bridge``, the ONLY module
-   allowed to invoke provider binaries on the user's behalf.
+   delegated to the runtime bridge, the ONLY module allowed to invoke
+   provider binaries on the user's behalf.
 *  It does NOT construct canonical ``AgentRequest`` objects directly.
    Construction is delegated to the bridge.
-*  It does NOT self-authorize verification, evidence sufficiency, or
-   terminal completion. Agent ``DONE`` is presented as ``VERIFIED`` (a
-   presentation label meaning "agent completed successfully") but never
-   promoted to a Harness terminal authority.
+*  It does NOT decide verification, evidence sufficiency, or terminal
+   completion. The default ``synapx`` entry drives the same canonical
+   governed execution as ``synapx run`` (via
+   ``GovernedFrontDoorRuntimeBridge``); ``VERIFIED`` is rendered only
+   when the governed terminal decision is ``COMPLETED``. Agent ``DONE``
+   alone can never produce ``VERIFIED``.
 
 Architectural invariants preserved:
 
 *  :class:`RuntimePort` is a stable Protocol used by existing tests and
    downstream callers.
 *  :func:`run` keeps the ``(workspace, task, runtime)`` signature so
-   existing unit tests and the ``runtime=FakeXxxRuntime()`` injection
-   seam still work.
+   existing unit tests and the injection seam still work.
 *  Provider-binary invocation primitives (PATH lookup, system-call
    invocation, child-process invocation) are NOT imported in this module
    (per the existing ``TestA6`` contract).
@@ -83,11 +84,12 @@ class RuntimePort(Protocol):
         ...
 
 
-# Front Door presentation map: agent outcome -> user-facing presentation string.
-# IMPORTANT: ``VERIFIED`` here is a presentation label meaning "the supported
-# agent completed successfully". It is NOT a Harness terminal authority
-# (terminal authority is owned by evidence + verifier layers and is out
-# of scope for the Front Door).
+# Front Door presentation map: governed outcome -> user-facing presentation string.
+# IMPORTANT: ``VERIFIED`` here is the public label for a governed terminal
+# decision of ``COMPLETED``. The Front Door never decides completion itself;
+# completion authority lives in the governed execution (terminal authority
+# reached through verification and sealed evidence). Agent ``DONE`` alone
+# can never produce ``VERIFIED`` (RQ8-P0).
 PRESENTATION_MAP: dict[str, str] = {
     "COMPLETED": "VERIFIED",
     "FAILED": "FAILED",
@@ -181,14 +183,17 @@ def _map_to_presentation(result: object | None) -> str:
 def _build_runtime(workspace: Path) -> RuntimePort:
     """Construct the workspace-bound RuntimePort bridge.
 
-    Imported lazily so that the bridge module is only loaded when the user
-    actually runs a task. Importing ``runtime_bridge`` transitively imports
-    ``synapx_harness.adapters.codex`` (canonical adapter). The Front Door
-    itself never imports from ``adapters.codex`` directly.
+    RQ8-P0 authority convergence: the default entry drives the canonical
+    governed execution, so this resolves to
+    ``GovernedFrontDoorRuntimeBridge`` -- the same bridge used by
+    ``synapx run``. Imported lazily so that this module stays free of
+    kernel imports per the existing ``TestA9`` contract.
     """
-    from synapx_harness.cli.runtime_bridge import FrontDoorRuntimeBridge
+    from synapx_harness.cli.governed_runtime_bridge import (
+        GovernedFrontDoorRuntimeBridge,
+    )
 
-    return FrontDoorRuntimeBridge(workspace_root=str(workspace))
+    return GovernedFrontDoorRuntimeBridge(workspace_root=str(workspace))
 
 
 def _missing_codex_user_message() -> tuple[str, str]:
@@ -252,7 +257,10 @@ def run(
     _render_progress("Working")
     result = runtime.invoke(effective_task)
 
-    _render_progress("Verifying")
+    # RQ8-P0 truthfulness: no separate "Verifying" stage is rendered here.
+    # Verification (when required) runs inside the governed execution owned
+    # by the runtime bridge; rendering it as a pending stage after invoke
+    # returns would manufacture stage state the Front Door did not observe.
     presentation = _map_to_presentation(result)
     _render_result(
         presentation,
@@ -464,16 +472,17 @@ def main() -> None:
 
 
 # ---------------------------------------------------------------------------
-# RQ4-R2-C3 public governed run subcommand.
+# RQ4-R2-C3 public governed run subcommand (RQ8-P0: also the default path).
 #
-# The default ``synapx`` entry stays bound to ``FrontDoorRuntimeBridge`` so
-# existing tests and the agent-DONE presentation surface remain unchanged.
-# The ``run`` subcommand is the canonical positive path for RQ4-R2-C3: it
-# drives Shared Understanding -> WorkContract -> Admission ->
+# RQ8-P0 authority convergence: the default ``synapx`` entry resolves to
+# ``GovernedFrontDoorRuntimeBridge`` (see :func:`_build_runtime`), so both
+# public entries drive Shared Understanding -> WorkContract -> Admission ->
 # ExecutionIdentity -> canonical AgentRequest -> real CodexAdapter
 # (SubprocessCodexRuntime) -> read-only Codex -> structured proposal ->
 # mutation chain -> independent verifier -> evidence seal -> terminal
 # decision issuance -> Front Door presentation.
+# The ``run`` subcommand remains as the explicit governed path carrying
+# the ``--receipt-out`` same-run receipt seam.
 # ---------------------------------------------------------------------------
 
 governed_app = typer.Typer(
