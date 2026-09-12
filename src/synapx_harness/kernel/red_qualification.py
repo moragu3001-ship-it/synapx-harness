@@ -180,6 +180,15 @@ class RedObservation:
     job_id: str = ""
     task_id: str = ""
     attempt_id: str = ""
+    # RQ8-P1-R3-R2 Sec 11: authoritative output refs bound at observation
+    # time. Must resolve to the persisted log files whose bytes hash to
+    # stdout_sha256/stderr_sha256 above.
+    stdout_ref: str = ""
+    stderr_ref: str = ""
+    # RQ8-P1-R3-R2: persisted artifact sizes (bytes) for the receipt
+    # projection. Recorded by the observer from the written files.
+    stdout_size_bytes: int = 0
+    stderr_size_bytes: int = 0
 
     def __post_init__(self) -> None:
         if self.failure_kind not in FAILURE_KINDS:

@@ -298,6 +298,19 @@ def _binding_dict(path: Path, blob: bytes) -> dict[str, object]:
 # ---------------------------------------------------------------------------
 
 
+def _r2_mismatch_run(tmp_path, name="mm"):
+    """R3-R2 helper: qualified expectation + actual TEST_FAILURE with
+    wrong IDs so the comparator runs, produces mismatch evidence, and
+    admission DENYs (Sec 5/7/14)."""
+    repo = _write_calc_repo(tmp_path / name, broken=True)
+    _stage_expectation(
+        repo,
+        fingerprint=_fp(VERIFICATION_COMMAND),
+        failed_ids=["tests/test_other.py::test_elsewhere"],
+    )
+    return _run(repo, proposal=_proposal(CALC_BROKEN, CALC_FIXED))
+
+
 class TestControlledObservation:
     def test_observation_references_command_receipt(
         self, tmp_path: Path
@@ -336,6 +349,96 @@ class TestControlledObservation:
                 cwd=repo,
                 timeout=60,
             )
+
+    def test_r3r2_mismatch_evidence_on_result(self, tmp_path):
+        """R3-R2 Sec 4/5: mismatch evidence stays on the runtime result."""
+        result = _r2_mismatch_run(tmp_path)
+        assert result.admission_receipt is not None
+        assert result.admission_receipt.admission_decision == "DENY"
+        assert result.red_qualification_evidence is not None
+        assert result.red_qualification_evidence.match_result is False
+
+    def test_r3r2_mismatch_evidence_sealed(self, tmp_path):
+        """R3-R2 Sec 4/5/12: mismatch evidence is sealed under one identity."""
+        result = _r2_mismatch_run(tmp_path)
+        sealed = result.sealed_evidence
+        assert isinstance(sealed, dict) and sealed
+        qualification = sealed.get("red_qualification")
+        assert isinstance(qualification, dict)
+        assert (
+            qualification.get("qualification_id")
+            == result.red_qualification_evidence.qualification_id
+        )
+
+    def test_r3r2_mismatch_evidence_in_receipt(self, tmp_path):
+        """R3-R2 Sec 4/13: same-run receipt projects mismatch evidence."""
+        result = _r2_mismatch_run(tmp_path)
+        projected = result.to_dict().get("red_qualification_evidence")
+        assert isinstance(projected, dict)
+        assert (
+            projected.get("qualification_id")
+            == result.red_qualification_evidence.qualification_id
+        )
+
+    def test_r3r2_mismatch_truth_chain(self, tmp_path):
+        """R3-R2 Sec 7/17: first-failure truth with evidence preserved."""
+        result = _r2_mismatch_run(tmp_path)
+        assert result.mutation_attempted is False
+        assert result.verification_attempted is False
+        assert result.terminal_decision.decision == "BLOCKED"
+        assert result.errors
+        assert result.errors[0] == result.primary_failure_message
+        assert "None" not in str(result.errors[0])
+
+    def test_r3r2_mismatch_receipt_sealed(self, tmp_path):
+        """R3-R2 Sec 8/11/12: actual controlled receipt is sealed and
+        carries the same command identity as the qualification."""
+        result = _r2_mismatch_run(tmp_path, "mmr")
+        sealed = result.sealed_evidence
+        receipt = sealed.get("red_observation_receipt")
+        assert isinstance(receipt, dict)
+        evidence = result.red_qualification_evidence
+        assert (
+            receipt.get("command_id") == evidence.command_receipt_id
+        )
+        assert receipt.get("command_id")
+
+    def test_r3r2_receipt_hashes_match_persisted_files(self, tmp_path):
+        """R3-R2 Sec 9/16: sealed stdout/stderr sha equals persisted
+        file bytes (the observer hashed at write time)."""
+        import hashlib as _hashlib
+
+        result = _r2_mismatch_run(tmp_path, "mmh")
+        sealed = result.sealed_evidence
+        receipt = sealed.get("red_observation_receipt")
+        assert isinstance(receipt, dict)
+        for stream in ("stdout_artifact", "stderr_artifact"):
+            artifact = receipt.get(stream)
+            assert isinstance(artifact, dict), f"missing {stream}"
+            ref = artifact.get("ref")
+            assert isinstance(ref, str) and ref
+            data = Path(ref).read_bytes()
+            assert _hashlib.sha256(data).hexdigest() == artifact.get(
+                "sha256"
+            ), f"Sec 9: {stream} sha does not match persisted file"
+            assert artifact.get("size_bytes") == len(data)
+
+    def test_r3r2_positive_receipt_sealed(self, tmp_path):
+        """R3-R2 Sec 13: positive run also seals the actual receipt."""
+        repo = _write_calc_repo(tmp_path / "pr", broken=True)
+        _stage_expectation(repo, fingerprint=_fp(VERIFICATION_COMMAND))
+        result = _run(repo, proposal=_proposal(CALC_BROKEN, CALC_FIXED))
+        assert result.terminal_decision.decision == "COMPLETED"
+        sealed = result.sealed_evidence
+        receipt = sealed.get("red_observation_receipt")
+        assert isinstance(receipt, dict)
+        evidence = result.red_qualification_evidence
+        assert (
+            receipt.get("command_id") == evidence.command_receipt_id
+        )
+        projected = result.to_dict().get("red_observation_receipt")
+        assert isinstance(projected, dict)
+        assert projected.get("command_id") == evidence.command_receipt_id
 
 
 # ---------------------------------------------------------------------------

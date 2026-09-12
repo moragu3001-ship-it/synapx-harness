@@ -942,6 +942,38 @@ def build_verification_result(
 # ---------------------------------------------------------------------------
 
 
+def _receipt_to_json_dict(
+    receipt: CommandResult,
+    observation: RedObservation,
+) -> dict[str, object]:
+    """Project ONE actual controlled receipt (RQ8-P1-R3-R2 Sec 8).
+
+    No re-run, no recomputation, no synthetic receipt: the command
+    identity comes from the receipt that produced the observation, and
+    the artifact hashes/sizes come from the observation's persisted
+    files (whose bytes the observer hashed at write time). The
+    file-byte hashes are authoritative for the sealed refs; the receipt
+    also carries the raw-run hashes in-process.
+    """
+    return {
+        "command_id": receipt.command_id,
+        "sanitized_command": receipt.sanitized_command,
+        "working_directory": receipt.working_directory,
+        "exit_code": receipt.exit_code,
+        "stdout_artifact": {
+            "ref": observation.stdout_ref,
+            "sha256": observation.stdout_sha256,
+            "size_bytes": observation.stdout_size_bytes,
+        },
+        "stderr_artifact": {
+            "ref": observation.stderr_ref,
+            "sha256": observation.stderr_sha256,
+            "size_bytes": observation.stderr_size_bytes,
+        },
+        "gate": receipt.gate,
+    }
+
+
 def _evidence_to_json_dict(
     evidence: RedQualificationEvidence,
 ) -> dict[str, object]:
@@ -994,6 +1026,7 @@ def build_evidence_envelope(
     verification: VerificationOutcome,
     source_revision: str,
     red_qualification: RedQualificationEvidence | None = None,
+    red_observation_receipt: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Build an ADMITTED evidence envelope (still pre-seal)."""
     envelope: dict[str, object] = {
@@ -1013,6 +1046,10 @@ def build_evidence_envelope(
         envelope["red_qualification"] = _evidence_to_json_dict(
             red_qualification
         )
+    if red_observation_receipt is not None:
+        # RQ8-P1-R3-R2 Sec 12: the same actual controlled receipt that
+        # produced the observation is sealed alongside the evidence.
+        envelope["red_observation_receipt"] = red_observation_receipt
     if proposal is not None:
         envelope["proposal"] = {
             "valid": proposal.valid,
@@ -1180,6 +1217,9 @@ class GovernedExecutionResult:
     # run (None on legacy-seam paths and on runs that never qualified).
     # Read-only lineage surface; the sealed envelope shape is unchanged.
     red_qualification_evidence: Any = None
+    # RQ8-P1-R3-R2 Sec 13: projected actual controlled observation receipt
+    # (None when no observation ran). Same object as the sealed projection.
+    red_observation_receipt: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -1272,6 +1312,10 @@ class GovernedExecutionResult:
                 if self.red_qualification_evidence is None
                 else _evidence_to_json_dict(self.red_qualification_evidence)
             ),
+            # RQ8-P1-R3-R2 Sec 13: same-run receipt projection of the
+            # actual controlled observation receipt (None when no
+            # observation ran). Identity matches the sealed projection.
+            "red_observation_receipt": self.red_observation_receipt,
         }
 
 
@@ -1419,6 +1463,8 @@ def _observe_red_state(
         log_dir.mkdir(parents=True, exist_ok=True)
         stdout_bytes = receipt.stdout_text.encode("utf-8")
         stderr_bytes = receipt.stderr_text.encode("utf-8")
+        stdout_ref = (log_dir / "stdout.log").as_posix()
+        stderr_ref = (log_dir / "stderr.log").as_posix()
         (log_dir / "stdout.log").write_bytes(stdout_bytes)
         (log_dir / "stderr.log").write_bytes(stderr_bytes)
     except OSError as exc:
@@ -1449,6 +1495,10 @@ def _observe_red_state(
         job_id=execution_identity.job_id,
         task_id=execution_identity.task_id,
         attempt_id=execution_identity.attempt_id,
+        stdout_ref=stdout_ref,
+        stderr_ref=stderr_ref,
+        stdout_size_bytes=len(stdout_bytes),
+        stderr_size_bytes=len(stderr_bytes),
     )
     return observation, receipt
 
@@ -1461,13 +1511,21 @@ def _qualify_red_by_comparator(
     execution_identity: ExecutionIdentity,
     pre_mutation_source_revision: str,
     timeout_seconds: int,
-) -> tuple[bool, str | None, RedQualificationEvidence | None]:
-    """Run the public-path RED qualification (RQ8-REDQ-001 + R3-R1).
+) -> tuple[
+    bool,
+    str | None,
+    RedQualificationEvidence | None,
+    RedObservation | None,
+    CommandResult | None,
+]:
+    """Run the public-path RED qualification (RQ8-REDQ-001 + R3-R1/R2).
 
     WorkContract-bound expectation bytes -> binding verification ->
     qualified expectation -> controlled actual observation ->
     deterministic comparator -> evidence. Returns
-    ``(qualified, denial_cause, evidence)``. Every failure mode fails
+    ``(qualified, denial_cause, evidence, observation, receipt)`` where
+    observation and receipt come from the SAME actual controlled run
+    (both None when no observation ran). Every failure mode fails
     closed with the first authoritative cause; staged files are only read.
     """
     binding = work_contract.red_expectation
@@ -1484,28 +1542,46 @@ def _qualify_red_by_comparator(
                 "missing QualifiedRedExpectation "
                 f"at {expectation_path.as_posix()} (no WorkContract binding)",
                 None,
+                None,
+                None,
             )
         return (
             False,
             "staged RED expectation missing "
             "(bound at WorkContract creation)",
             None,
+            None,
+            None,
         )
     payload, cause = verify_workcontract_expectation_binding(
         bound, loaded_bytes, expectation_path.as_posix()
     )
     if cause is not None or payload is None:
-        return False, cause or "RED expectation binding failed", None
+        return (
+            False,
+            cause or "RED expectation binding failed",
+            None,
+            None,
+            None,
+        )
     try:
         expectation = QualifiedRedExpectation.from_dict(payload)
     except ExpectationError as exc:
-        return False, f"unqualified RED expectation ({exc})", None
+        return (
+            False,
+            f"unqualified RED expectation ({exc})",
+            None,
+            None,
+            None,
+        )
 
     if verification_command is None:
         return (
             False,
             "no trustworthy verification command for target repository; "
             "RED observation cannot run",
+            None,
+            None,
             None,
         )
     try:
@@ -1519,7 +1595,7 @@ def _qualify_red_by_comparator(
             timeout_seconds=timeout_seconds,
         )
     except RedObservationError as exc:
-        return False, f"RED observation failed ({exc})", None
+        return False, f"RED observation failed ({exc})", None, None, None
 
     evidence = compare_red_qualification(
         expectation,
@@ -1530,8 +1606,14 @@ def _qualify_red_by_comparator(
         command_receipt_id=receipt.command_id,
     )
     if evidence.match_result:
-        return True, None, evidence
-    return False, f"RED qualification failed ({evidence.reason})", evidence
+        return True, None, evidence, observation, receipt
+    return (
+        False,
+        f"RED qualification failed ({evidence.reason})",
+        evidence,
+        observation,
+        receipt,
+    )
 
 
 @dataclass
@@ -1798,6 +1880,8 @@ def run_governed_execution(
 
     red_denial_cause: str | None = None
     red_evidence: RedQualificationEvidence | None = None
+    red_observation: RedObservation | None = None
+    red_receipt: CommandResult | None = None
     if request.red_qualified_override is not None:
         red_qualified = bool(request.red_qualified_override)
         if not red_qualified:
@@ -1811,6 +1895,8 @@ def run_governed_execution(
             red_qualified,
             red_denial_cause,
             red_evidence,
+            red_observation,
+            red_receipt,
         ) = _qualify_red_by_comparator(
             workspace_root=workspace_root,
             verification_command=verification_command_for_scope,
@@ -1831,6 +1917,15 @@ def run_governed_execution(
             f"RED not qualified ({red_denial_cause})"
             if red_denial_cause
             else "RED not qualified (red_qualified=False)"
+        )
+
+    # RQ8-P1-R3-R2 Sec 8/11: project the SAME actual controlled receipt
+    # that produced the observation (no re-run, no recompute). None when
+    # no observation ran (pre-observation blocks stay None per Sec 15).
+    red_observation_receipt: dict[str, object] | None = None
+    if red_observation is not None and red_receipt is not None:
+        red_observation_receipt = _receipt_to_json_dict(
+            red_receipt, red_observation
         )
 
     # ----- Mutation chain -----
@@ -1909,6 +2004,11 @@ def run_governed_execution(
                 proposal=mutation.proposal,
                 admission_receipt=pre_apply_admission,
                 path_gate_receipt=pre_apply_path_receipt,
+                # RQ8-P1-R3-R2 Sec 6/15: preserve comparator evidence
+                # and observation receipt when they exist (MATCH or
+                # MISMATCH); None blocks where the comparator never ran.
+                red_qualification_evidence=red_evidence,
+                red_observation_receipt=red_observation_receipt,
             )
         # Applicator ran but produced zero writes -> verify normally so the
         # post-apply state is honestly checked.
@@ -2066,6 +2166,7 @@ def run_governed_execution(
             verification=verification,
             source_revision=before.source_revision,
             red_qualification=red_evidence,
+            red_observation_receipt=red_observation_receipt,
         )
     )
     decision, terminalization_input = finalize_terminal_decision(
@@ -2107,6 +2208,7 @@ def run_governed_execution(
             errors=[],
         )
     result.red_qualification_evidence = red_evidence
+    result.red_observation_receipt = red_observation_receipt
     # RQ8-R1-R2-R2-R1 (Q2): carry truthful stage truth on the positive path
     # as well. The mutation chain ran to completion and the independent
     # verifier ran the resolved command.
@@ -2146,6 +2248,8 @@ def _block(
     proposal: PatchProposal | None = None,
     admission_receipt: AdmissionReceipt | None = None,
     path_gate_receipt: PathGateReceipt | None = None,
+    red_qualification_evidence: RedQualificationEvidence | None = None,
+    red_observation_receipt: dict[str, object] | None = None,
 ) -> GovernedExecutionResult:
     """Build a BLOCKED GovernedExecutionResult for fail-closed paths.
 
@@ -2215,6 +2319,11 @@ def _block(
             apply_receipt=None,
             verification=verification,
             source_revision="BLOCKED",
+            # RQ8-P1-R3-R2 Sec 6/12: comparator evidence and the actual
+            # controlled observation receipt are preserved in the sealed
+            # envelope whenever the comparator ran (MATCH or MISMATCH).
+            red_qualification=red_qualification_evidence,
+            red_observation_receipt=red_observation_receipt,
         )
     )
     decision, terminalization_input = finalize_terminal_decision(
@@ -2249,6 +2358,8 @@ def _block(
         terminal_decision=decision,
         terminalization_input=terminalization_input,
         errors=[reason],
+        red_qualification_evidence=red_qualification_evidence,
+        red_observation_receipt=red_observation_receipt,
     )
     # RQ8-R1-R2-R2 (D2/D4): attach the same-run-receipt layer so downstream
     # consumers can distinguish launch/process truth from later diagnostics.
