@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from synapx_harness.adapters.codex.runtime import SubprocessCodexRuntime
+from synapx_harness.cli.assurance_presentation import build_assurance_presentation
 from synapx_harness.cli.frontdoor import PresentationResult
 from synapx_harness.cli.runtime_bridge import (
     CODEX_BIN_NAME,
@@ -268,14 +269,24 @@ class GovernedFrontDoorRuntimeBridge:
 
     @staticmethod
     def _map_to_presentation(result: Any) -> PresentationResult | None:
-        """Map the governed execution result onto Front Door presentation."""
+        """Map the governed execution result onto Front Door presentation.
+
+        The terminal mapping stays presentation-only; the read-only
+        assurance projection is attached when it can be built so the
+        Front Door can render authoritative claims without touching the
+        kernel object graph itself.
+        """
+        try:
+            assurance = build_assurance_presentation(result)
+        except Exception:
+            assurance = None
         decision = result.terminal_decision
         if hasattr(decision, "decision"):
             decision_value = decision.decision
         else:
             decision_value = str(decision)
         if decision_value == TerminalDecision.COMPLETED.value:
-            return PresentationResult("COMPLETED", None)
+            return PresentationResult("COMPLETED", None, assurance=assurance)
         if decision_value == TerminalDecision.BLOCKED.value:
             first_error = (
                 result.errors[0] if getattr(result, "errors", None) else None
@@ -283,6 +294,7 @@ class GovernedFrontDoorRuntimeBridge:
             return PresentationResult(
                 "BLOCKED",
                 first_error or "Governed execution was blocked",
+                assurance=assurance,
             )
         # FAILED
         first_error = (
@@ -291,6 +303,7 @@ class GovernedFrontDoorRuntimeBridge:
         return PresentationResult(
             "FAILED",
             first_error or "Governed execution reported FAILED",
+            assurance=assurance,
         )
 
 

@@ -41,6 +41,7 @@ from typing import Annotated, Protocol
 
 import typer
 
+from synapx_harness.cli.assurance_presentation import render_assurance_lines
 from synapx_harness.cli.console import (
     CONSOLE_PROMPT,
     ConsoleEvent,
@@ -67,11 +68,22 @@ class PresentationResult:
 
     This is NOT a TerminalDecisionRecord - it is a presentation-only
     value object used to map runtime results to public output.
+
+    The optional ``assurance`` slot carries a read-only
+    ``AssurancePresentation`` built by the governed runtime bridge from
+    the canonical governed result. It is always optional so existing
+    fake runtimes and tests without assurance keep working unchanged.
     """
 
-    def __init__(self, status: str, reason: str | None = None) -> None:
+    def __init__(
+        self,
+        status: str,
+        reason: str | None = None,
+        assurance: object | None = None,
+    ) -> None:
         self.status = status
         self.reason = reason
+        self.assurance = assurance
 
 
 class RuntimePort(Protocol):
@@ -154,8 +166,51 @@ def _render_progress(stage: str) -> None:
     typer.echo(f"{stage}...", err=True)
 
 
-def _render_result(presentation: str, reason: str | None = None) -> None:
+def _display_reason(
+    reason: str | None, assurance: object | None
+) -> str | None:
+    """Prefer the first-failure reason carried by the assurance projection.
+
+    The bridge keeps the legacy ``errors[0]``-or-generic reason on
+    ``PresentationResult`` for backward compatibility, but the
+    user-facing reason must follow first-failure precedence
+    (primary failure > errors[0] > terminal reason), which the
+    read-only projection already resolves. When the projection knows
+    the terminal state, its reason wins; otherwise the legacy reason
+    is kept so fake runtimes without assurance render unchanged.
+    """
+    state = getattr(assurance, "terminal_state", None)
+    if state in ("COMPLETED", "FAILED", "BLOCKED"):
+        candidate = getattr(assurance, "terminal_reason", None)
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return reason
+
+
+def _render_assurance(assurance: object | None) -> None:
+    """Render a read-only assurance projection, if one was attached.
+
+    Fail-closed: anything unrenderable produces no claim lines rather
+    than invented output. The existing terminal label below still
+    renders from the presentation map.
+    """
+    if assurance is None:
+        return
+    try:
+        for line in render_assurance_lines(assurance):  # type: ignore[arg-type]
+            typer.echo(line)
+    except Exception:
+        return
+
+
+def _render_result(
+    presentation: str,
+    reason: str | None = None,
+    assurance: object | None = None,
+) -> None:
+    _render_assurance(assurance)
     typer.echo(presentation)
+    reason = _display_reason(reason, assurance)
     if reason and presentation != "VERIFIED":
         typer.echo(f"Reason: {reason}", err=True)
 
@@ -275,6 +330,7 @@ def run(
     _render_result(
         presentation,
         result.reason if isinstance(result, PresentationResult) else None,
+        result.assurance if isinstance(result, PresentationResult) else None,
     )
     _enforce_public_exit_contract(presentation)
 
@@ -359,6 +415,7 @@ def run_console(
         _render_result(
             _map_to_presentation(result),
             result.reason if isinstance(result, PresentationResult) else None,
+            result.assurance if isinstance(result, PresentationResult) else None,
         )
 
 
@@ -616,9 +673,11 @@ def _render_governed_result(presentation: PresentationResult) -> str:
     public exit contract in one place (RQ5-R2 §8).
     """
     presentation_label = PRESENTATION_MAP.get(presentation.status, "NEEDS_ATTENTION")
+    _render_assurance(presentation.assurance)
     typer.echo(presentation_label)
-    if presentation.reason and presentation_label != "VERIFIED":
-        typer.echo(f"Reason: {presentation.reason}", err=True)
+    display_reason = _display_reason(presentation.reason, presentation.assurance)
+    if display_reason and presentation_label != "VERIFIED":
+        typer.echo(f"Reason: {display_reason}", err=True)
     return presentation_label
 
 
