@@ -535,8 +535,20 @@ class MutationAdmissionGate:
         allowed_write_paths: list[str],
         denied_reason: str | None = None,
     ) -> AdmissionReceipt:
-        """Check RED qualification and issue admission receipt."""
+        """Check RED qualification and issue admission receipt.
+
+        RQ8-P1: a DENY receipt MUST always carry a deterministic,
+        gate-identifying ``denied_reason`` (never ``None``) so the
+        user-visible projection can never render ``Admission DENIED: None``.
+        Callers are expected to pass the authoritative cause; the fallback
+        below is a last-resort safety net that names the actual gate
+        condition (``red_qualified is False``).
+        """
         decision = 'ALLOW' if red_qualified and not denied_reason else 'DENY'
+        if decision == 'DENY' and denied_reason is None:
+            denied_reason = (
+                'RED qualification not satisfied (red_qualified=False)'
+            )
 
         return AdmissionReceipt(
             receipt_id=f'rct/{work_contract_id}',
@@ -906,6 +918,7 @@ class GovernedMutationExecutor:
         expected_before_sha256_by_path: dict[str, str],
         current_source_revision_at_apply: str,
         agent_stdout: str,
+        admission_denied_reason: str | None = None,
     ) -> MutationExecutionResult:
         """Execute the full mutation chain (RQ4-R2-C2 strict, single-file).
 
@@ -970,6 +983,7 @@ class GovernedMutationExecutor:
             source_revision=source_revision,
             execution_identity=execution_identity,
             allowed_write_paths=allowed_write_paths,
+            denied_reason=admission_denied_reason,
         )
 
         if admission.admission_decision != 'ALLOW':
