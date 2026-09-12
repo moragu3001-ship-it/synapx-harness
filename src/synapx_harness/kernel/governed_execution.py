@@ -1128,13 +1128,17 @@ class GovernedExecutionResult:
 
 def _derive_red_with_cause(
     red_qualification_ref: str,
-) -> tuple[bool, str | None, bool]:
+) -> tuple[bool, str | None]:
     """Derive ``red_qualified`` while preserving the deterministic cause.
 
-    Returns ``(qualified, denial_cause, artifact_present)``. ``denial_cause``
-    is ``None`` iff the artifact exists, parses, and qualifies. The cause
-    strings are bounded, gate-identifying facts (missing / unreadable /
+    Returns ``(qualified, denial_cause)``. ``denial_cause`` is ``None`` iff
+    the artifact exists, parses, and qualifies. The cause strings are
+    bounded, gate-identifying facts (missing / unreadable / malformed /
     non-qualifying artifact) -- never semantic interpretation.
+
+    RQ8-P1-R1: this helper is strictly read-only. It never creates,
+    overwrites, or repairs RED evidence; staged artifacts are honored
+    verbatim and every other case fails closed with its cause.
     """
     try:
         qualified = bool(
@@ -1142,88 +1146,13 @@ def _derive_red_with_cause(
         )
     except Exception as exc:
         detail = str(exc).strip() or type(exc).__name__
-        return False, detail, False
-    if qualified:
-        return True, None, True
-    return (
-        False,
-        f"RED evidence at {red_qualification_ref} does not qualify "
-        "(requires pytest exit_code=1 with matched defect signature)",
-        True,
-    )
-
-
-def _ensure_default_red_evidence(
-    *,
-    workspace_root: Path,
-    request: GovernedExecutionRequest,
-    red_qualification_ref: str,
-) -> tuple[bool, str | None]:
-    """Capture RED evidence on the public default path (RQ8-P1 repair).
-
-    Bounded admission-input wiring fix: the governed lifecycle previously
-    derived ``red_qualified`` solely from a RED artifact file that no
-    lifecycle step ever produced and the public CLI never staged, so every
-    fresh-workspace positive run deterministically denied admission. When
-    the caller supplies no explicit ``red_qualification_ref``/override:
-
-    * a staged artifact at the default path is still honored verbatim
-      (existing behavior, no subprocess);
-    * otherwise the resolved authoritative verification command -- the SAME
-      resolver used for post-mutation GREEN, so RED/GREEN command identity
-      holds -- is executed pre-mutation on the pristine tree and the
-      observed outcome is persisted as the RED artifact, which is then
-      derived from via the canonical derivation (no literal ``True``).
-
-    Deterministic RED-qualify rule: ``exit_code == 1`` (pytest's
-    "one or more tests failed" signal, matching the canonical derivation).
-    ``exit_code == 0`` (green tree, nothing to repair) and any other exit
-    code (usage/collection/internal error, timeout) do NOT qualify. No
-    semantic test-output interpretation is performed.
-    """
-    qualified, cause, present = _derive_red_with_cause(red_qualification_ref)
-    if present:
-        return qualified, cause
-
-    verification_command = _effective_verification_command(
-        request=request, workspace_root=workspace_root
-    )
-    if verification_command is None:
-        return (
-            False,
-            "no trustworthy verification command for target repository; "
-            "RED state cannot be established",
-        )
-
-    cmd_str = subprocess.list2cmdline(verification_command)
-    cmd_result = run_command(
-        cmd_str,
-        cwd=workspace_root,
-        timeout=request.timeout_seconds,
-    )
-    exit_code = cmd_result.exit_code
-    matches = exit_code == 1
-    artifact = {
-        "exit_code": exit_code,
-        "failure_reason_matches_intended_defect": matches,
-        "red_command": list(verification_command),
-        "observed_by": "synapx_harness_red_capture",
-        "observed_at": _now_iso(),
-    }
-    try:
-        Path(red_qualification_ref).write_text(
-            json.dumps(artifact, indent=2), encoding="utf-8"
-        )
-    except OSError as exc:
-        return False, f"RED evidence could not be recorded: {exc}"
-
-    qualified, cause, _ = _derive_red_with_cause(red_qualification_ref)
+        return False, detail
     if qualified:
         return True, None
     return (
         False,
-        f"RED verification exited {exit_code} "
-        "(a failing suite must exit 1 to prove the defect)",
+        f"RED evidence at {red_qualification_ref} does not qualify "
+        "(requires pytest exit_code=1 with matched defect signature)",
     )
 
 
@@ -1459,7 +1388,13 @@ def run_governed_execution(
             agent_stderr_sha256=agent_stderr_sha256,
         )
 
-    # ----- RED qualification (RQ4-R2-C2-R1 Repair A; RQ8-P1 wiring) -----
+    # ----- RED qualification (RQ4-R2-C2-R1 Repair A; RQ8-P1-R1) -----
+    # Authority rule: the harness only READS staged RED evidence. The
+    # intended-defect binding is asserted by whoever stages the artifact
+    # (task/fixture author or operator who knows the intended defect, per
+    # the run_red_evidence.py precedent); a bare failing suite is NEVER
+    # equated with a matched defect, and staged artifacts are never
+    # created, overwritten, or repaired here.
     if request.red_qualification_ref is None:
         red_qualification_ref = (
             workspace_root / ".synapx_red_evidence.json"
@@ -1472,18 +1407,12 @@ def run_governed_execution(
         red_qualified = bool(request.red_qualified_override)
         if not red_qualified:
             red_denial_cause = "red_qualified_override=False"
-    elif request.red_qualification_ref is not None:
-        red_qualified, red_denial_cause, _ = _derive_red_with_cause(
-            red_qualification_ref
-        )
     else:
-        # Public default path: capture RED from the authoritative suite
-        # when no artifact was staged (RQ8-P1: previously this always
-        # derived False from a file nothing ever wrote).
-        red_qualified, red_denial_cause = _ensure_default_red_evidence(
-            workspace_root=workspace_root,
-            request=request,
-            red_qualification_ref=red_qualification_ref,
+        # Explicit refs and the public default path share one read-only
+        # derivation: staged qualified -> honor; missing / unreadable /
+        # malformed / non-qualifying -> fail closed with the cause.
+        red_qualified, red_denial_cause = _derive_red_with_cause(
+            red_qualification_ref
         )
 
     # RQ8-P1: a DENY admission MUST carry the authoritative cause so the

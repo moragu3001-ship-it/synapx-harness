@@ -1,17 +1,23 @@
-"""RQ8-P1 admission repair regression tests (bounded).
+"""RQ8-P1-R1 admission repair regression tests (bounded).
 
-Covers Work Order Sec 15-19 for the POSITIVE_MUTATION_ADMISSION_BLOCKED /
-ADMISSION_DENIAL_REASON_MISSING repair:
+Covers Work Order RQ8-P1-R1 Sec 9-12 on top of the RQ8-P1 RC2 reason
+repair (DENY always carries a non-None authoritative reason):
 
-* Sec 15: exact RQ8 contract (canonical write set + exact proposed path)
-  must reach Admission ALLOW / PathGate ALLOW / mutation eligible.
-* Sec 16: path-normalization ALLOW matrix + negatives that must stay DENIED.
-* Sec 17: every deterministic DENIED carries a non-None authoritative reason.
-* Sec 18: first-failure precedence (admission DENY suppresses downstream).
-* Sec 19: agent-activity / terminal coexistence invariant.
+Authority rule under test (see RQ8_P1_R1_RED_AUTHORITY_CENSUS.json):
+the harness only READS staged RED evidence. The intended-defect binding
+is asserted by whoever stages the artifact (fixture author / operator
+who knows the intended defect). A bare failing suite is NEVER equated
+with a matched defect, staged artifacts are never created/overwritten,
+and every other case fails closed with its cause.
 
-No production semantics are weakened here: negatives assert BLOCKED +
-mutation never attempted.
+* Sec 10: exact RQ8 contract (src/itsdangerous/url_safe.py, nested path)
+  admitted via staged legitimate RED evidence. The calculator synthetic
+  is kept as a secondary fixture only.
+* Sec 11: mandatory negatives -- unrelated failures never auto-admit,
+  exit-1/match-False DENYs, malformed/unreadable/green/non-1 staged
+  evidence DENYs with the artifact preserved, path negatives DENY.
+* Sec 12: first-failure chain truth.
+* Sec 9: DENY reasons name the first authoritative cause, never None.
 """
 from __future__ import annotations
 
@@ -39,29 +45,22 @@ from synapx_harness.kernel.mutation_proposal_contract import (
     parse_allowed_write_paths,
 )
 
-TASK_TEXT = (
-    "Fix the subtract regression.\n"
-    "\n"
-    "Allowed write paths:\n"
-    "- calculator.py\n"
-    "\n"
-    "Do not modify unrelated files.\n"
-    "Run the repository's authoritative tests and only complete "
-    "if verification passes.\n"
-)
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
-CALC_BROKEN = 'def add(a, b):\n    return a + b\n'
+CALC_BROKEN = "def add(a, b):\n    return a + b\n"
 
 CALC_FIXED = (
-    'def add(a, b):\n'
-    '    return a + b\n'
-    '\n'
-    '\n'
-    'def subtract(a, b):\n'
-    '    return a - b\n'
+    "def add(a, b):\n"
+    "    return a + b\n"
+    "\n"
+    "\n"
+    "def subtract(a, b):\n"
+    "    return a - b\n"
 )
 
-TEST_CALC = textwrap.dedent(
+CALC_TEST = textwrap.dedent(
     """\
     import calculator
 
@@ -75,9 +74,75 @@ TEST_CALC = textwrap.dedent(
     """
 )
 
+CALC_TASK = (
+    "Fix the subtract regression.\n"
+    "\n"
+    "Allowed write paths:\n"
+    "- calculator.py\n"
+    "\n"
+    "Do not modify unrelated files.\n"
+    "Run the repository's authoritative tests and only complete "
+    "if verification passes.\n"
+)
 
-def _write_repo(root: Path, *, broken: bool) -> Path:
-    """Create a minimal calculator fixture (fails when broken)."""
+# Exact RQ8 P1 contract text shape (Work Order Sec 28).
+RQ8_TASK = (
+    "Fix the compressed URL-safe payload regression.\n"
+    "\n"
+    "Allowed write paths:\n"
+    "- src/itsdangerous/url_safe.py\n"
+    "\n"
+    "Do not modify unrelated files.\n"
+    "Run the repository's authoritative tests and only complete "
+    "if verification passes.\n"
+)
+
+URL_SAFE_BROKEN = textwrap.dedent(
+    '''\
+    """Minimal mirror of the P1 seeded url_safe compressed-payload defect."""
+    import zlib
+
+
+    def dumps_payload(data: bytes) -> bytes:
+        return b"." + zlib.compress(data)
+
+
+    def loads_payload(payload: bytes) -> bytes:
+        decompress = False
+        if payload.startswith(b"."):
+            payload = payload[1:]
+            decompress = False
+        if decompress:
+            return zlib.decompress(payload)
+        return payload
+    '''
+)
+
+URL_SAFE_FIXED = URL_SAFE_BROKEN.replace(
+    "        decompress = False\n", "        decompress = True\n", 1
+)
+
+URL_SAFE_TEST = textwrap.dedent(
+    """\
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+    from itsdangerous.url_safe import dumps_payload, loads_payload
+
+
+    def test_roundtrip_compressed():
+        assert loads_payload(dumps_payload(b"hello")) == b"hello"
+
+
+    def test_roundtrip_empty():
+        assert loads_payload(dumps_payload(b"")) == b""
+    """
+)
+
+
+def _write_calc_repo(root: Path, *, broken: bool) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     (root / "calculator.py").write_text(
         CALC_BROKEN if broken else CALC_FIXED, encoding="utf-8"
@@ -85,8 +150,53 @@ def _write_repo(root: Path, *, broken: bool) -> Path:
     tests_dir = root / "tests"
     tests_dir.mkdir(exist_ok=True)
     (tests_dir / "__init__.py").write_text("", encoding="utf-8")
-    (tests_dir / "test_calculator.py").write_text(TEST_CALC, encoding="utf-8")
+    (tests_dir / "test_calculator.py").write_text(CALC_TEST, encoding="utf-8")
     return root
+
+
+def _write_url_safe_repo(root: Path, *, broken: bool) -> Path:
+    """Nested src-layout mirror of the RQ8 P1 target contract."""
+    pkg = root / "src" / "itsdangerous"
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "url_safe.py").write_text(
+        URL_SAFE_BROKEN if broken else URL_SAFE_FIXED, encoding="utf-8"
+    )
+    tests_dir = root / "tests"
+    tests_dir.mkdir(exist_ok=True)
+    (tests_dir / "__init__.py").write_text("", encoding="utf-8")
+    (tests_dir / "test_url_safe.py").write_text(
+        URL_SAFE_TEST, encoding="utf-8"
+    )
+    return root
+
+
+def _stage_red(
+    repo: Path,
+    *,
+    exit_code: int = 1,
+    match: bool = True,
+    ref: str | None = None,
+) -> Path:
+    """Operator-role staging of RED evidence (the legitimate producer).
+
+    Mirrors the canonical run_red_evidence.py artifact shape: the match
+    assertion travels WITH auditable observed evidence, asserted by the
+    stager who knows the intended defect -- never derived by the harness.
+    """
+    path = Path(ref) if ref is not None else repo / ".synapx_red_evidence.json"
+    path.write_text(
+        json.dumps(
+            {
+                "exit_code": exit_code,
+                "failure_reason_matches_intended_defect": match,
+                "failure_reason": "observed RED failure for the intended defect",
+                "intended_defect": "staged by test operator",
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
 
 
 def _proposal_text(file_path: str, old: str, new: str) -> str:
@@ -103,15 +213,11 @@ def _proposal_text(file_path: str, old: str, new: str) -> str:
     )
 
 
-def _fix_proposal() -> str:
-    return _proposal_text("calculator.py", CALC_BROKEN, CALC_FIXED)
-
-
 def _run(
     repo: Path,
     *,
     proposal: str,
-    task: str = TASK_TEXT,
+    task: str = CALC_TASK,
     red_qualification_ref: str | None = None,
     red_qualified_override: bool | None = None,
 ):  # -> GovernedExecutionResult
@@ -127,75 +233,192 @@ def _run(
 
 
 # ---------------------------------------------------------------------------
-# Sec 15 -- Required positive contract test (exact RQ8 contract)
+# Sec 10 -- Exact RQ8 path regression (nested path, staged authority)
 # ---------------------------------------------------------------------------
 
 
-class TestPositiveAdmissionContract:
-    def test_canonical_write_set_parses_exactly(self) -> None:
-        assert parse_allowed_write_paths(TASK_TEXT) == ["calculator.py"]
+class TestExactRQ8PathContract:
+    def test_canonical_rq8_write_set_parses_exactly(self) -> None:
+        assert parse_allowed_write_paths(RQ8_TASK) == [
+            "src/itsdangerous/url_safe.py"
+        ]
 
-    def test_exact_authorized_path_is_admitted_and_mutates(
+    def test_exact_nested_path_admitted_with_staged_red(
         self, tmp_path: Path
     ) -> None:
-        """Exact RQ8 contract: canonical write set + exact proposed path.
-
-        Pre-repair this fails with ``Admission DENIED: None`` because no
-        lifecycle step ever stages RED evidence; post-repair the harness
-        executes the authoritative suite as RED and admits the valid
-        proposal.
-        """
-        repo = _write_repo(tmp_path / "red", broken=True)
-        result = _run(repo, proposal=_fix_proposal())
+        """Exact RQ8 contract: nested allowed path + exact proposed path +
+        operator-staged qualified RED -> ALLOW / ALLOW / mutated / PASS /
+        COMPLETED on the public default path (no ref, no override)."""
+        repo = _write_url_safe_repo(tmp_path / "p1", broken=True)
+        _stage_red(repo, exit_code=1, match=True)
+        old = "        decompress = False\n"
+        new = "        decompress = True\n"
+        result = _run(
+            repo,
+            proposal=_proposal_text("src/itsdangerous/url_safe.py", old, new),
+            task=RQ8_TASK,
+        )
         assert result.admission_receipt is not None
         assert result.admission_receipt.admission_decision == "ALLOW"
         assert result.path_gate_receipt is not None
         assert result.path_gate_receipt.gate_decision == "ALLOW"
+        assert result.path_gate_receipt.proposal_paths == [
+            "src/itsdangerous/url_safe.py"
+        ]
         assert result.mutation_attempted is True
         assert result.verification_attempted is True
         assert result.errors == []
         assert result.terminal_decision.decision == "COMPLETED"
-        assert (repo / "calculator.py").read_text(
+        assert (repo / "src" / "itsdangerous" / "url_safe.py").read_text(
             encoding="utf-8"
-        ) == CALC_FIXED
+        ) == URL_SAFE_FIXED
 
-    def test_explicit_staged_red_still_honored(self, tmp_path: Path) -> None:
-        """Operator-staged RED evidence keeps working (no subprocess needed)."""
-        repo = _write_repo(tmp_path / "staged", broken=True)
-        red_path = repo / ".synapx_red_evidence.json"
-        red_path.write_text(
-            json.dumps(
-                {
-                    "exit_code": 1,
-                    "failure_reason_matches_intended_defect": True,
-                }
-            ),
-            encoding="utf-8",
-        )
+    def test_calculator_synthetic_kept(self, tmp_path: Path) -> None:
+        """Secondary synthetic positive (kept, does not replace Sec 10)."""
+        repo = _write_calc_repo(tmp_path / "calc", broken=True)
+        _stage_red(repo, exit_code=1, match=True)
         result = _run(
-            repo,
-            proposal=_fix_proposal(),
-            red_qualification_ref=str(red_path),
+            repo, proposal=_proposal_text("calculator.py", CALC_BROKEN, CALC_FIXED)
         )
         assert result.admission_receipt is not None
         assert result.admission_receipt.admission_decision == "ALLOW"
         assert result.mutation_attempted is True
+        assert result.terminal_decision.decision == "COMPLETED"
 
-    def test_explicit_override_seams_unchanged(self, tmp_path: Path) -> None:
-        repo = _write_repo(tmp_path / "override", broken=True)
+
+# ---------------------------------------------------------------------------
+# Sec 7/8 -- Staged evidence authority and preservation
+# ---------------------------------------------------------------------------
+
+
+class TestStagedEvidenceAuthority:
+    def test_explicit_ref_still_honored(self, tmp_path: Path) -> None:
+        repo = _write_calc_repo(tmp_path / "staged", broken=True)
+        ref = _stage_red(
+            repo,
+            exit_code=1,
+            match=True,
+            ref=str(repo / "custom_red.json"),
+        )
         result = _run(
-            repo, proposal=_fix_proposal(), red_qualified_override=True
+            repo,
+            proposal=_proposal_text("calculator.py", CALC_BROKEN, CALC_FIXED),
+            red_qualification_ref=str(ref),
         )
         assert result.admission_receipt is not None
         assert result.admission_receipt.admission_decision == "ALLOW"
 
+    def test_override_seams_unchanged(self, tmp_path: Path) -> None:
+        repo = _write_calc_repo(tmp_path / "override", broken=True)
+        result = _run(
+            repo,
+            proposal=_proposal_text("calculator.py", CALC_BROKEN, CALC_FIXED),
+            red_qualified_override=True,
+        )
+        assert result.admission_receipt is not None
+        assert result.admission_receipt.admission_decision == "ALLOW"
+
+    def test_malformed_artifact_denies_and_is_preserved(
+        self, tmp_path: Path
+    ) -> None:
+        repo = _write_calc_repo(tmp_path / "malformed", broken=True)
+        red_path = repo / ".synapx_red_evidence.json"
+        garbage = b"{not json###"
+        red_path.write_bytes(garbage)
+        result = _run(
+            repo, proposal=_proposal_text("calculator.py", CALC_BROKEN, CALC_FIXED)
+        )
+        assert result.admission_receipt is not None
+        assert result.admission_receipt.admission_decision == "DENY"
+        assert result.mutation_attempted is False
+        # Existing evidence lineage is preserved byte-for-byte.
+        assert red_path.read_bytes() == garbage
+
+    def test_unreadable_artifact_denies_and_is_preserved(
+        self, tmp_path: Path
+    ) -> None:
+        repo = _write_calc_repo(tmp_path / "unreadable", broken=True)
+        red_path = repo / ".synapx_red_evidence.json"
+        red_path.write_text("{}", encoding="utf-8")
+        red_path.unlink()
+        red_path.mkdir()
+        result = _run(
+            repo, proposal=_proposal_text("calculator.py", CALC_BROKEN, CALC_FIXED)
+        )
+        assert result.admission_receipt is not None
+        assert result.admission_receipt.admission_decision == "DENY"
+        assert result.mutation_attempted is False
+        assert red_path.is_dir()
+
+    def test_missing_artifact_denies_and_creates_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """No staged evidence -> fail closed WITHOUT the harness writing
+        any artifact of its own (Sec 8 preservation)."""
+        repo = _write_calc_repo(tmp_path / "missing", broken=True)
+        result = _run(
+            repo, proposal=_proposal_text("calculator.py", CALC_BROKEN, CALC_FIXED)
+        )
+        assert result.admission_receipt is not None
+        assert result.admission_receipt.admission_decision == "DENY"
+        assert result.mutation_attempted is False
+        assert not (repo / ".synapx_red_evidence.json").exists()
+
 
 # ---------------------------------------------------------------------------
-# Sec 16 -- Path-normalization matrix (ALLOW) and negatives (DENY)
+# Sec 11 -- Mandatory negatives: failures never auto-admit
 # ---------------------------------------------------------------------------
 
 
-class TestPathGateMatrix:
+class TestNoAutoAdmission:
+    def test_unrelated_failing_suite_without_staged_red_denies(
+        self, tmp_path: Path
+    ) -> None:
+        """A genuinely failing suite (real exit 1) with NO staged
+        intended-defect binding must NOT admit. This is the rejected
+        da64adc equation, pinned as a negative."""
+        repo = _write_calc_repo(tmp_path / "unrelated", broken=True)
+        result = _run(
+            repo, proposal=_proposal_text("calculator.py", CALC_BROKEN, CALC_FIXED)
+        )
+        assert result.admission_receipt is not None
+        assert result.admission_receipt.admission_decision == "DENY"
+        assert result.mutation_attempted is False
+        assert "None" not in str(result.errors[0])
+
+    def test_exit1_without_defect_match_denies(self, tmp_path: Path) -> None:
+        repo = _write_calc_repo(tmp_path / "nomatch", broken=True)
+        _stage_red(repo, exit_code=1, match=False)
+        result = _run(
+            repo, proposal=_proposal_text("calculator.py", CALC_BROKEN, CALC_FIXED)
+        )
+        assert result.admission_receipt is not None
+        assert result.admission_receipt.admission_decision == "DENY"
+        assert result.mutation_attempted is False
+
+    def test_green_suite_denies(self, tmp_path: Path) -> None:
+        repo = _write_calc_repo(tmp_path / "green", broken=False)
+        _stage_red(repo, exit_code=0, match=True)
+        proposal = _proposal_text(
+            "calculator.py", CALC_FIXED, CALC_FIXED + "\n# touch\n"
+        )
+        result = _run(repo, proposal=proposal)
+        assert result.admission_receipt is not None
+        assert result.admission_receipt.admission_decision == "DENY"
+        assert result.mutation_attempted is False
+
+    def test_collection_error_exit_code_denies(self, tmp_path: Path) -> None:
+        repo = _write_calc_repo(tmp_path / "colerr", broken=True)
+        _stage_red(repo, exit_code=2, match=True)
+        result = _run(
+            repo, proposal=_proposal_text("calculator.py", CALC_BROKEN, CALC_FIXED)
+        )
+        assert result.admission_receipt is not None
+        assert result.admission_receipt.admission_decision == "DENY"
+        assert result.mutation_attempted is False
+
+
+class TestPathNegatives:
     def _parsed(self, file_path: str) -> object:
         proposal = PatchProposalParser().parse_structured(
             _proposal_text(file_path, "old-text", "new-text")
@@ -203,20 +426,7 @@ class TestPathGateMatrix:
         assert proposal.valid
         return proposal
 
-    def test_exact_relative_path_allow(self) -> None:
-        gate = ExactPathMutationGate()
-        receipt = gate.check(
-            proposal=self._parsed("calculator.py"),  # type: ignore[arg-type]
-            allowed_write_paths=["calculator.py"],
-            source_revision="rev",
-            admission_receipt_id="rct/x",
-        )
-        assert receipt.gate_decision == "ALLOW"
-        assert receipt.apply_authority == "ISSUED"
-        assert receipt.reason is None
-
-    def test_admission_gate_denies_without_reason_loss(self) -> None:
-        """Gate-level safety net: DENY never carries a None reason."""
+    def test_gate_denies_without_reason_loss(self) -> None:
         gate = MutationAdmissionGate()
         receipt = gate.admit(
             work_contract_id="wc-test",
@@ -241,8 +451,6 @@ class TestPathGateMatrix:
         ],
     )
     def test_negative_paths_stay_denied(self, proposed: str) -> None:
-        """Traversal / absolute / sibling / prefix-confusion / basename
-        collisions must never be admitted."""
         gate = ExactPathMutationGate()
         receipt = gate.check(
             proposal=self._parsed(proposed),  # type: ignore[arg-type]
@@ -257,107 +465,74 @@ class TestPathGateMatrix:
     def test_unauthorized_sibling_end_to_end_blocked(
         self, tmp_path: Path
     ) -> None:
-        """A proposal for a file outside the write set never mutates and
-        never surfaces a None reason."""
-        repo = _write_repo(tmp_path / "neg", broken=True)
+        repo = _write_calc_repo(tmp_path / "neg", broken=True)
+        _stage_red(repo, exit_code=1, match=True)
         (repo / "other.py").write_text("x = 1\n", encoding="utf-8")
-        sibling_proposal = _proposal_text("other.py", "x = 1\n", "x = 2\n")
-        result = _run(repo, proposal=sibling_proposal)
+        result = _run(
+            repo, proposal=_proposal_text("other.py", "x = 1\n", "x = 2\n")
+        )
         assert result.mutation_attempted is False
         assert result.terminal_decision.decision == "BLOCKED"
         assert result.errors
         assert all("None" not in str(e) for e in result.errors)
         assert (repo / "other.py").read_text(encoding="utf-8") == "x = 1\n"
 
-
-# ---------------------------------------------------------------------------
-# Sec 17 -- Required reason tests (DENIED never renders None)
-# ---------------------------------------------------------------------------
-
-
-class TestDenialReasons:
-    def test_green_tree_denial_names_red_gate(self, tmp_path: Path) -> None:
-        """No defect to repair (suite green) -> deterministic DENY whose
-        reason identifies the RED gate and never renders None."""
-        repo = _write_repo(tmp_path / "green", broken=False)
-        green_proposal = _proposal_text(
-            "calculator.py", CALC_FIXED, CALC_FIXED + "\n# touch\n"
+    def test_traversal_end_to_end_blocked(self, tmp_path: Path) -> None:
+        repo = _write_calc_repo(tmp_path / "traversal", broken=True)
+        _stage_red(repo, exit_code=1, match=True)
+        result = _run(
+            repo,
+            proposal=_proposal_text("../escape.py", "x = 1\n", "x = 2\n"),
         )
-        result = _run(repo, proposal=green_proposal)
+        assert result.mutation_attempted is False
+        assert result.terminal_decision.decision == "BLOCKED"
+        assert not (tmp_path / "escape.py").exists()
+
+    def test_absolute_end_to_end_blocked(self, tmp_path: Path) -> None:
+        repo = _write_calc_repo(tmp_path / "absolute", broken=True)
+        _stage_red(repo, exit_code=1, match=True)
+        result = _run(
+            repo,
+            proposal=_proposal_text("/abs/external.py", "x = 1\n", "x = 2\n"),
+        )
+        assert result.mutation_attempted is False
+        assert result.terminal_decision.decision == "BLOCKED"
+
+
+# ---------------------------------------------------------------------------
+# Sec 9/12 -- Reason truth and first-failure chain
+# ---------------------------------------------------------------------------
+
+
+class TestReasonAndChainTruth:
+    def test_first_failure_chain(self, tmp_path: Path) -> None:
+        repo = _write_calc_repo(tmp_path / "chain", broken=True)
+        _stage_red(repo, exit_code=0, match=True)
+        result = _run(
+            repo, proposal=_proposal_text("calculator.py", CALC_BROKEN, CALC_FIXED)
+        )
         assert result.admission_receipt is not None
         assert result.admission_receipt.admission_decision == "DENY"
-        reason = result.admission_receipt.denied_reason
-        assert reason is not None
-        assert "RED" in str(reason).upper()
-        assert result.errors
-        assert result.errors[0] == result.primary_failure_message
-        assert "None" not in str(result.errors[0])
-        assert "RED" in str(result.errors[0]).upper()
-
-    def test_missing_command_denial_is_deterministic(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Unresolvable verification command -> fail-closed DENY with a
-        deterministic, gate-identifying reason (no None)."""
-        import synapx_harness.kernel.governed_execution as gov
-
-        repo = _write_repo(tmp_path / "noresolve", broken=True)
-        monkeypatch.setattr(
-            gov, "resolve_target_verification_command", lambda root: None
-        )
-        request = GovernedExecutionRequest(
-            workspace_root=repo,
-            task=TASK_TEXT,
-            codex_stdout_override=_fix_proposal(),
-        )
-        result = run_governed_execution(request)
-        assert result.admission_receipt is not None
-        assert result.admission_receipt.admission_decision == "DENY"
-        assert result.admission_receipt.denied_reason is not None
-        assert "None" not in str(result.errors[0])
-
-
-# ---------------------------------------------------------------------------
-# Sec 18 -- First-failure precedence
-# ---------------------------------------------------------------------------
-
-
-class TestFirstFailurePrecedence:
-    def test_admission_deny_suppresses_downstream(self, tmp_path: Path) -> None:
-        repo = _write_repo(tmp_path / "prec", broken=False)
-        green_proposal = _proposal_text(
-            "calculator.py", CALC_FIXED, CALC_FIXED + "\n# touch\n"
-        )
-        result = _run(repo, proposal=green_proposal)
-        assert result.admission_receipt is not None
-        assert result.admission_receipt.admission_decision == "DENY"
+        assert result.path_gate_receipt is None
         assert result.mutation_attempted is False
         assert result.verification_attempted is False
-        assert result.path_gate_receipt is None
-        # Downstream states may not replace the admission cause.
+        assert result.terminal_decision.decision == "BLOCKED"
         assert result.errors
         assert result.errors[0] == result.primary_failure_message
-        assert "RED" in str(result.errors[0]).upper()
+        assert "None" not in str(result.errors[0])
         assurance = build_assurance_presentation(result)
         assert assurance.terminal_reason == result.errors[0]
 
-
-# ---------------------------------------------------------------------------
-# Sec 19 -- Agent activity invariant (Phase 2C coexistence)
-# ---------------------------------------------------------------------------
-
-
-class TestAgentActivityCoexistence:
     def test_completed_agent_beside_blocked_terminal(
         self, tmp_path: Path
     ) -> None:
-        """Agent DONE + later admission DENY -> agent Completed coexists
-        with NEEDS_ATTENTION; activity is never derived from terminal."""
-        repo = _write_repo(tmp_path / "coexist", broken=False)
-        green_proposal = _proposal_text(
-            "calculator.py", CALC_FIXED, CALC_FIXED + "\n# touch\n"
+        """Agent DONE + later admission DENY: activity Completed coexists
+        with BLOCKED; activity is never derived from terminal state."""
+        repo = _write_calc_repo(tmp_path / "coexist", broken=True)
+        _stage_red(repo, exit_code=0, match=True)
+        result = _run(
+            repo, proposal=_proposal_text("calculator.py", CALC_BROKEN, CALC_FIXED)
         )
-        result = _run(repo, proposal=green_proposal)
         agent = source_from_result(result)
         assert agent is not None
         assert agent.process_started is True
