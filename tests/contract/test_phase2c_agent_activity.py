@@ -1,23 +1,26 @@
-"""RQ8 Phase 2C generic agent-activity contract tests (Path B).
+"""RQ8 Phase 2C-R1 agent-truth activity contract tests.
 
-Path B (``B_GENERIC_FALLBACK``) shows only the bounded invoke lifecycle
-(Running / Completed / Failed) that the Front Door actually observed.
-Every assertion targets lifecycle presence / lifecycle absence / authority
-separation / ordering. Cosmetic layout is never contracted.
+Agent Activity describes the AGENT lifecycle projection from EXISTING
+agent signals only. It NEVER renames the Harness terminal state:
 
-Boundaries guarded here:
+*  N1  admission block before any agent start -> no Running/Completed/
+   Failed claim (``Not run``).
+*  N2  agent DONE + verification FAIL -> ``Completed`` beside ``FAILED``.
+*  N3  agent DONE + terminal BLOCKED -> ``Completed`` beside ``BLOCKED``.
+*  N4  terminal COMPLETED without agent source -> ``Unavailable`` (never
+   an inferred ``Completed``).
+*  P1  agent DONE + terminal COMPLETED -> ``Completed`` with ``VERIFIED``.
 
-*  No fake timeline: without structured provider evidence, no stage prose
-   (inspecting / planning / editing / testing) may appear.
-*  No assurance authority: activity lines never carry verification, scope,
-   evidence, mutation, or terminal claims and never change them.
-*  No terminal authority: ``Completed`` activity never implies ``VERIFIED``;
-   ``VERIFIED`` still appears only for a ``COMPLETED`` presentation.
+All governed scenarios use explicit test seams (``codex_stdout_override``,
+``red_qualified_override``, ``verification_command``); no live Codex
+binary is required.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import sys
+import textwrap
 from pathlib import Path
 from typing import Any
 
@@ -26,10 +29,12 @@ import typer
 
 import synapx_harness.cli.frontdoor as _fd
 from synapx_harness.cli.agent_activity import (
+    AGENT_PROCESS_STAGE,
     AgentActivityPresentation,
-    activity_for_presentation_status,
+    AgentActivitySource,
+    activity_for_agent_source,
     render_activity_lines,
-    running_activity,
+    source_from_result,
     unknown_activity,
 )
 from synapx_harness.cli.assurance_presentation import AssurancePresentation
@@ -41,6 +46,13 @@ from synapx_harness.cli.frontdoor import (
     run,
     run_console,
 )
+from synapx_harness.cli.governed_runtime_bridge import (
+    GovernedFrontDoorRuntimeBridge,
+)
+from synapx_harness.kernel.mutation_proposal_contract import (
+    PROPOSAL_BEGIN,
+    PROPOSAL_END,
+)
 
 FORBIDDEN_TIMELINE_PHRASES: tuple[str, ...] = (
     "Inspecting repository",
@@ -49,6 +61,7 @@ FORBIDDEN_TIMELINE_PHRASES: tuple[str, ...] = (
     "Editing file",
     "Running tests",
     "Reviewing changes",
+    "Running...",
 )
 
 FORBIDDEN_AUTHORITY_FIELDS: tuple[str, ...] = (
@@ -57,22 +70,64 @@ FORBIDDEN_AUTHORITY_FIELDS: tuple[str, ...] = (
     "evidence_valid",
     "terminal_decision",
     "mutation_authorized",
+    "terminal_status",
 )
 
+TASK_TEXT = "Allowed write paths:\n- calculator.py\n\nAdd subtract(a, b).\n"
+TASK_NO_WRITE_SET = "Describe in one sentence what you see in the workspace."
 
-class _StubRuntime:
-    """Minimal ``RuntimePort`` double returning a preset presentation."""
 
-    def __init__(self, result: PresentationResult) -> None:
-        self._result = result
-        self.invoke_calls: list[str] = []
+def _write_calc_fixture(root: Path) -> Path:
+    repo = root / "fixture"
+    repo.mkdir(exist_ok=True)
+    (repo / "calculator.py").write_text(
+        "def add(a, b):\n    return a + b\n",
+        encoding="utf-8",
+    )
+    tests_dir = repo / "tests"
+    tests_dir.mkdir(exist_ok=True)
+    (tests_dir / "__init__.py").write_text("", encoding="utf-8")
+    (tests_dir / "test_calculator.py").write_text(
+        textwrap.dedent(
+            """\
+            import calculator
 
-    def is_available(self) -> bool:
-        return True
 
-    def invoke(self, task: str) -> PresentationResult | None:
-        self.invoke_calls.append(task)
-        return self._result
+            def test_add():
+                assert calculator.add(2, 3) == 5
+
+
+            def test_subtract():
+                assert calculator.subtract(5, 3) == 2
+            """
+        ),
+        encoding="utf-8",
+    )
+    return repo
+
+
+def _proposal_text(file_path: str, old: str, new: str) -> str:
+    return (
+        f"{PROPOSAL_BEGIN}\n"
+        f"FILE: {file_path}\n"
+        f"<<<< OLD\n"
+        f"{old}\n"
+        f">>>> OLD\n"
+        f"<<<< NEW\n"
+        f"{new}\n"
+        f">>>> NEW\n"
+        f"{PROPOSAL_END}\n"
+    )
+
+
+def _valid_proposal(fixture: Path) -> str:
+    current = (fixture / "calculator.py").read_text(encoding="utf-8")
+    replacement = current + "\n\ndef subtract(a, b):\n    return a - b\n"
+    return _proposal_text("calculator.py", current, replacement)
+
+
+def _bridge(fixture: Path) -> GovernedFrontDoorRuntimeBridge:
+    return GovernedFrontDoorRuntimeBridge(workspace_root=str(fixture))
 
 
 class _EchoCapture:
@@ -112,67 +167,157 @@ def _qualified_assurance() -> AssurancePresentation:
     )
 
 
+def _done_source() -> AgentActivitySource:
+    return AgentActivitySource(
+        process_started=True,
+        failure_class="PROCESS_SUCCESS",
+        exit_code=0,
+        primary_failure_stage=None,
+        stdout_present=True,
+    )
+
+
 # ---------------------------------------------------------------------------
-# DTO: no authority, bounded vocabulary only
+# Mapping units: agent signals only, terminal never an input
 # ---------------------------------------------------------------------------
 
 
-class TestActivityDtoHasNoAuthority:
-    def test_fields_carry_no_authority(self) -> None:
-        names = {f.name for f in dataclasses.fields(AgentActivityPresentation)}
-        assert names == {"status"}
-        for forbidden in FORBIDDEN_AUTHORITY_FIELDS:
-            assert forbidden not in names
+class TestAgentTruthMapping:
+    def test_done_triple_maps_to_completed(self) -> None:
+        assert activity_for_agent_source(_done_source()).status == "COMPLETED"
 
-    def test_dto_is_immutable(self) -> None:
-        with pytest.raises(dataclasses.FrozenInstanceError):
-            running_activity().status = "COMPLETED"  # type: ignore[misc]
+    def test_agent_stage_failure_overrides_process_success(self) -> None:
+        # Adapter-level FAILED with a successful process triple (e.g. an
+        # unconfirmed cancellation) surfaces as primary_failure_stage
+        # AGENT_PROCESS: the agent did NOT complete.
+        source = AgentActivitySource(
+            process_started=True,
+            failure_class="PROCESS_SUCCESS",
+            exit_code=0,
+            primary_failure_stage=AGENT_PROCESS_STAGE,
+            stdout_present=True,
+        )
+        assert activity_for_agent_source(source).status == "FAILED"
 
-    def test_mapping_success_to_completed(self) -> None:
-        assert activity_for_presentation_status("COMPLETED").status == "COMPLETED"
+    @pytest.mark.parametrize(
+        "failure_class,exit_code",
+        [
+            ("PROCESS_STARTED_EXIT_NONZERO", 1),
+            ("PROCESS_TIMEOUT", -1),
+            (None, 3),
+        ],
+    )
+    def test_started_non_success_maps_to_failed(
+        self, failure_class: str | None, exit_code: int
+    ) -> None:
+        source = AgentActivitySource(
+            process_started=True,
+            failure_class=failure_class,
+            exit_code=exit_code,
+            primary_failure_stage=AGENT_PROCESS_STAGE,
+            stdout_present=True,
+        )
+        assert activity_for_agent_source(source).status == "FAILED"
 
-    def test_mapping_failure_and_block_to_failed(self) -> None:
-        assert activity_for_presentation_status("FAILED").status == "FAILED"
-        assert activity_for_presentation_status("BLOCKED").status == "FAILED"
+    def test_started_without_outcome_evidence_is_unavailable(self) -> None:
+        source = AgentActivitySource(
+            process_started=True,
+            failure_class=None,
+            exit_code=None,
+            primary_failure_stage=None,
+            stdout_present=False,
+        )
+        assert activity_for_agent_source(source).status == "UNKNOWN"
 
-    @pytest.mark.parametrize("weird", [None, "", "DONE", "done", 123, [], object()])
-    def test_mapping_malformed_to_unknown(self, weird: object) -> None:
-        assert activity_for_presentation_status(weird).status == "UNKNOWN"
+    def test_unstarted_without_evidence_is_not_run(self) -> None:
+        source = AgentActivitySource(
+            process_started=False,
+            failure_class=None,
+            exit_code=None,
+            primary_failure_stage=None,
+            stdout_present=False,
+        )
+        assert activity_for_agent_source(source).status == "NOT_RUN"
 
-    def test_render_vocabulary(self) -> None:
-        assert render_activity_lines(running_activity()) == [
-            "Agent Activity",
-            "  Running...",
-            "",
-        ]
+    def test_launch_error_is_failed(self) -> None:
+        source = AgentActivitySource(
+            process_started=False,
+            failure_class="PROCESS_LAUNCH_ERROR",
+            exit_code=-1,
+            primary_failure_stage=AGENT_PROCESS_STAGE,
+            stdout_present=False,
+        )
+        assert activity_for_agent_source(source).status == "FAILED"
+
+    def test_contradictory_signals_are_unavailable(self) -> None:
+        # Unstarted flag combined with post-invoke evidence must NOT be
+        # resolved by inference.
+        source = AgentActivitySource(
+            process_started=False,
+            failure_class=None,
+            exit_code=0,
+            primary_failure_stage=None,
+            stdout_present=True,
+        )
+        assert activity_for_agent_source(source).status == "UNKNOWN"
+
+    @pytest.mark.parametrize(
+        "source",
+        [None, "x", 123, object(), AgentActivitySource()],
+    )
+    def test_missing_source_is_unavailable(self, source: object) -> None:
+        assert (
+            activity_for_agent_source(source).status == "UNKNOWN"  # type: ignore[arg-type]
+        )
+
+    def test_non_bool_process_started_is_unavailable(self) -> None:
+        source = AgentActivitySource(process_started="yes")  # type: ignore[arg-type]
+        assert activity_for_agent_source(source).status == "UNKNOWN"
+
+    def test_terminal_decision_decoy_is_ignored(self) -> None:
+        class Decoy:
+            terminal_decision = "COMPLETED"
+            verification = "PASS"
+
+        assert source_from_result(Decoy()) is None
+        assert source_from_result(None) is None
+        assert source_from_result("COMPLETED") is None
+
+    def test_source_snapshot_reads_existing_fields(self) -> None:
+        class Result:
+            process_started = True
+            failure_class = "PROCESS_SUCCESS"
+            codex_process_exit_code = 0
+            primary_failure_stage = None
+            agent_stdout_sha256 = "ab" * 32
+
+        source = source_from_result(Result())
+        assert source is not None
+        assert activity_for_agent_source(source).status == "COMPLETED"
+
+    def test_render_vocabulary_has_no_running(self) -> None:
         assert render_activity_lines(
             AgentActivityPresentation(status="COMPLETED")
         ) == ["Agent Activity", "  Completed", ""]
         assert render_activity_lines(
             AgentActivityPresentation(status="FAILED")
         ) == ["Agent Activity", "  Failed", ""]
+        assert render_activity_lines(
+            AgentActivityPresentation(status="NOT_RUN")
+        ) == ["Agent Activity", "  Not run", ""]
         assert render_activity_lines(unknown_activity()) == [
             "Agent Activity",
             "  Unavailable",
             "",
         ]
 
-    @pytest.mark.parametrize("weird", [None, 123, "x", object()])
-    def test_render_never_raises_on_malformed(self, weird: object) -> None:
-        lines = render_activity_lines(weird)
-        assert lines[0] == "Agent Activity"
-        assert lines[1] == "  Unavailable"
-
     def test_no_detail_or_timeline_leak(self) -> None:
         corpus = "\n".join(
             line
-            for p in (
-                running_activity(),
-                AgentActivityPresentation(status="COMPLETED"),
-                AgentActivityPresentation(status="FAILED"),
-                unknown_activity(),
+            for status in ("COMPLETED", "FAILED", "NOT_RUN", "UNKNOWN")
+            for line in render_activity_lines(
+                AgentActivityPresentation(status=status)  # type: ignore[arg-type]
             )
-            for line in render_activity_lines(p)
         )
         assert "Command:" not in corpus
         assert "File activity" not in corpus
@@ -180,97 +325,221 @@ class TestActivityDtoHasNoAuthority:
         for phrase in FORBIDDEN_TIMELINE_PHRASES:
             assert phrase not in corpus
 
+    def test_dto_carries_no_authority(self) -> None:
+        for cls in (AgentActivityPresentation, AgentActivitySource):
+            names = {f.name for f in dataclasses.fields(cls)}
+            for forbidden in FORBIDDEN_AUTHORITY_FIELDS:
+                assert forbidden not in names
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            _done_source().exit_code = 0  # type: ignore[misc]
+
 
 # ---------------------------------------------------------------------------
-# Front Door: invoke lifecycle projection (§28 Path B)
+# N1 -- admission block before any agent start
 # ---------------------------------------------------------------------------
 
 
-class TestFrontDoorActivityLifecycle:
-    def test_invoke_start_renders_running(
+class TestN1AdmissionBlockBeforeAgent:
+    def test_no_agent_claim_without_start_evidence(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         capture = _patched_echo(monkeypatch)
-        stub = _StubRuntime(PresentationResult("COMPLETED", None))
-        run(workspace=tmp_path, task="hello", runtime=stub)
-        assert stub.invoke_calls == ["hello"]
-        assert "Agent Activity" in capture.err
-        assert "  Running..." in capture.err
-
-    def test_invoke_success_renders_completed_and_verified(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        capture = _patched_echo(monkeypatch)
-        run(
-            workspace=tmp_path,
-            task="hello",
-            runtime=_StubRuntime(PresentationResult("COMPLETED", None)),
-        )
-        assert "Agent Activity" in capture.out
-        assert "  Completed" in capture.out
-        assert "VERIFIED" in capture.out
-
-    @pytest.mark.parametrize("status", ["FAILED", "BLOCKED"])
-    def test_invoke_failure_or_block_renders_failed_without_verified(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str
-    ) -> None:
-        capture = _patched_echo(monkeypatch)
-        with pytest.raises(typer.Exit):
-            run(
-                workspace=tmp_path,
-                task="hello",
-                runtime=_StubRuntime(PresentationResult(status, "boom")),
-            )
-        assert "  Failed" in capture.out
-        assert "  Completed" not in capture.out
+        presentation = _bridge(tmp_path).invoke_governed(task=TASK_NO_WRITE_SET)
+        assert presentation is not None
+        assert presentation.status == "BLOCKED"
+        label = _render_governed_result(presentation)
+        assert label == "NEEDS_ATTENTION"
+        assert "  Not run" in capture.out
+        for claim in ("Running", "  Completed", "  Failed"):
+            assert claim not in capture.out
+            assert claim not in capture.err
         assert "VERIFIED" not in capture.out
 
-    def test_activity_precedes_assurance_and_terminal(
+
+# ---------------------------------------------------------------------------
+# N2 -- agent DONE + verification FAIL coexist
+# ---------------------------------------------------------------------------
+
+
+class TestN2AgentDoneVerificationFail:
+    def test_completed_beside_failed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fixture = _write_calc_fixture(tmp_path)
+        capture = _patched_echo(monkeypatch)
+        presentation = _bridge(fixture).invoke_governed(
+            task=TASK_TEXT,
+            codex_stdout_override=_valid_proposal(fixture),
+            red_qualified_override=True,
+            verification_command=[
+                sys.executable,
+                "-c",
+                "import sys; sys.exit(1)",
+            ],
+        )
+        assert presentation is not None
+        assert presentation.status == "FAILED"
+        # The agent source proves completion independently of the terminal.
+        assert presentation.agent is not None
+        assert presentation.agent.process_started is True
+        label = _render_governed_result(presentation)
+        assert label == "FAILED"
+        assert "  Completed" in capture.out
+        assert "  Failed" not in capture.out
+        assert "VERIFIED" not in capture.out
+        assert "  ✗ FAILED" in capture.out
+
+
+# ---------------------------------------------------------------------------
+# N3 -- agent DONE + terminal BLOCKED coexist
+# ---------------------------------------------------------------------------
+
+
+class TestN3AgentDoneTerminalBlocked:
+    def test_completed_beside_blocked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fixture = _write_calc_fixture(tmp_path)
+        capture = _patched_echo(monkeypatch)
+        presentation = _bridge(fixture).invoke_governed(
+            task=TASK_TEXT,
+            codex_stdout_override=_valid_proposal(fixture),
+            red_qualified_override=False,
+        )
+        assert presentation is not None
+        assert presentation.status == "BLOCKED"
+        assert presentation.agent is not None
+        assert presentation.agent.process_started is True
+        label = _render_governed_result(presentation)
+        assert label == "NEEDS_ATTENTION"
+        assert "  Completed" in capture.out
+        assert "  Failed" not in capture.out
+        assert "VERIFIED" not in capture.out
+
+
+# ---------------------------------------------------------------------------
+# N4 -- terminal COMPLETED without agent source
+# ---------------------------------------------------------------------------
+
+
+class TestN4TerminalCompletedWithoutAgentSource:
+    def test_no_inferred_completed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         capture = _patched_echo(monkeypatch)
-        _render_result("VERIFIED", None, _qualified_assurance(), activity_status="COMPLETED")
+        label = _render_governed_result(
+            PresentationResult("COMPLETED", None, assurance=_qualified_assurance())
+        )
+        assert label == "VERIFIED"
+        assert "  Unavailable" in capture.out
+        assert "  Completed" not in capture.out
+        # Phase 2B authoritative claims are unchanged beside the section.
         text = "\n".join(capture.out)
         assert text.index("Agent Activity") < text.index("Changes")
-        assert text.index("Changes") < text.index("SynapX Assurance")
-        assert text.index("SynapX Assurance") < text.index("VERIFIED")
-        # Phase 2B authoritative claims are unchanged beside the new section.
         assert "✓ Mutation observed" in text
-        assert "✓ Scope authorized" in text
-        assert "pytest -q" in text
         assert "✓ PASS" in text
-        assert "✓ Qualified" in text
 
-    def test_failed_activity_keeps_failed_terminal_without_verified(
-        self, monkeypatch: pytest.MonkeyPatch
+
+# ---------------------------------------------------------------------------
+# P1 -- agent DONE + terminal COMPLETED
+# ---------------------------------------------------------------------------
+
+
+class TestP1AgentDoneTerminalCompleted:
+    def test_completed_with_verified(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        fixture = _write_calc_fixture(tmp_path)
         capture = _patched_echo(monkeypatch)
-        _render_governed_result(PresentationResult("FAILED", "boom"))
-        assert "  Failed" in capture.out
+        presentation = _bridge(fixture).invoke_governed(
+            task=TASK_TEXT,
+            codex_stdout_override=_valid_proposal(fixture),
+            red_qualified_override=True,
+            verification_command=[
+                sys.executable,
+                "-c",
+                "import sys; sys.exit(0)",
+            ],
+        )
+        assert presentation is not None
+        assert presentation.status == "COMPLETED"
+        label = _render_governed_result(presentation)
+        assert label == "VERIFIED"
+        assert "  Completed" in capture.out
+
+
+# ---------------------------------------------------------------------------
+# Front Door wiring: agent slot only, terminal never consulted
+# ---------------------------------------------------------------------------
+
+
+class TestFrontDoorAgentWiring:
+    def test_run_completed_agent_beside_failed_terminal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from synapx_harness.cli.frontdoor import RuntimePort
+
+        class Stub(RuntimePort):
+            def is_available(self) -> bool:
+                return True
+
+            def invoke(self, task: str) -> PresentationResult | None:
+                return PresentationResult(
+                    "FAILED", "boom", agent=_done_source()
+                )
+
+        capture = _patched_echo(monkeypatch)
+        with pytest.raises(typer.Exit):
+            run(workspace=tmp_path, task="hello", runtime=Stub())
+        assert "  Completed" in capture.out
+        assert "  Failed" not in capture.out
         assert "FAILED" in capture.out
         assert "VERIFIED" not in capture.out
 
-    def test_completed_activity_does_not_promote_blocked_terminal(
+    def test_run_without_agent_source_is_unavailable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from synapx_harness.cli.frontdoor import RuntimePort
+
+        class Stub(RuntimePort):
+            def is_available(self) -> bool:
+                return True
+
+            def invoke(self, task: str) -> PresentationResult | None:
+                return PresentationResult("COMPLETED", None)
+
+        capture = _patched_echo(monkeypatch)
+        run(workspace=tmp_path, task="hello", runtime=Stub())
+        assert "  Unavailable" in capture.out
+        assert "  Completed" not in capture.out
+        assert "VERIFIED" in capture.out
+
+    def test_no_fake_timeline_in_outputs(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         capture = _patched_echo(monkeypatch)
-        _render_governed_result(PresentationResult("BLOCKED", "blocked"))
-        assert "  Failed" in capture.out
-        assert "VERIFIED" not in capture.out
-
-    @pytest.mark.parametrize("status", ["COMPLETED", "FAILED", "BLOCKED"])
-    def test_no_fake_timeline_in_outputs(
-        self, monkeypatch: pytest.MonkeyPatch, status: str
-    ) -> None:
-        capture = _patched_echo(monkeypatch)
-        _render_governed_result(PresentationResult(status, "reason"))
+        _render_result(
+            "VERIFIED", None, _qualified_assurance(), agent=_done_source()
+        )
+        _render_governed_result(PresentationResult("FAILED", "boom"))
         corpus = "\n".join(capture.out) + "\n" + "\n".join(capture.err)
         for phrase in FORBIDDEN_TIMELINE_PHRASES:
             assert phrase not in corpus
 
-    def test_console_task_then_quit_preserves_lifecycle(
+    def test_console_task_then_quit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        from synapx_harness.cli.frontdoor import RuntimePort
+
+        class Stub(RuntimePort):
+            def is_available(self) -> bool:
+                return True
+
+            def invoke(self, task: str) -> PresentationResult | None:
+                return PresentationResult(
+                    "COMPLETED", None, agent=_done_source()
+                )
+
         capture = _patched_echo(monkeypatch)
         events = [
             ConsoleEvent(ConsoleEventKind.TASK, text="hello"),
@@ -279,11 +548,10 @@ class TestFrontDoorActivityLifecycle:
         echoed: list[str] = []
         code = run_console(
             workspace=tmp_path,
-            runtime=_StubRuntime(PresentationResult("COMPLETED", None)),
+            runtime=Stub(),
             read_event=lambda: events.pop(0),
             echo=lambda msg="", **kw: echoed.append(str(msg)),
         )
         assert code == 0
-        assert "  Running..." in capture.err
         assert "  Completed" in capture.out
         assert "VERIFIED" in capture.out

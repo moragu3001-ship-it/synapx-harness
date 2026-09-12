@@ -296,10 +296,11 @@ class TestU1FrontDoorEchoesVerified:
         assert "VERIFIED" in rendered, (
             f"Front Door did not echo VERIFIED for COMPLETED: {rendered}"
         )
-        # RQ8 Phase 2C Path B: the bounded generic activity section
-        # precedes the terminal label without changing it.
+        # RQ8 Phase 2C-R1: without agent-truth plumbing the activity
+        # section admits ignorance; the terminal label is unchanged.
         assert "Agent Activity" in rendered
-        assert "  Completed" in rendered
+        assert "  Unavailable" in rendered
+        assert "  Completed" not in rendered
         assert rendered.index("Agent Activity") < rendered.index("VERIFIED")
 
     def test_frontdoor_renders_failed_when_terminal_failed(self) -> None:
@@ -316,8 +317,10 @@ class TestU1FrontDoorEchoesVerified:
             _fd.typer.echo = original_echo
         assert "FAILED" in rendered
         assert any("Reason: boom" in line for line in rendered)
-        # RQ8 Phase 2C Path B: generic failed activity coexists with FAILED.
-        assert "  Failed" in rendered
+        # RQ8 Phase 2C-R1: terminal FAILED is never copied into an agent
+        # lifecycle claim; without agent source the section is Unavailable.
+        assert "  Unavailable" in rendered
+        assert "  Failed" not in rendered
         assert "VERIFIED" not in rendered
 
     def test_agent_done_alone_does_not_promote_to_verified(self) -> None:

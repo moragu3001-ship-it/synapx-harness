@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from synapx_harness.adapters.codex.runtime import SubprocessCodexRuntime
+from synapx_harness.cli.agent_activity import source_from_result
 from synapx_harness.cli.assurance_presentation import build_assurance_presentation
 from synapx_harness.cli.frontdoor import PresentationResult
 from synapx_harness.cli.runtime_bridge import (
@@ -275,18 +276,31 @@ class GovernedFrontDoorRuntimeBridge:
         assurance projection is attached when it can be built so the
         Front Door can render authoritative claims without touching the
         kernel object graph itself.
+
+        RQ8 Phase 2C-R1: the EXISTING agent-lifecycle signals are
+        snapshotted into the presentation's read-only ``agent`` slot via
+        duck-typed access (no kernel/contract change). The Front Door
+        projects activity ONLY from that slot -- never from the terminal
+        status -- so a completed agent coexists truthfully with a failed
+        terminal, and a pre-agent block shows no lifecycle claim.
         """
         try:
             assurance = build_assurance_presentation(result)
         except Exception:
             assurance = None
+        try:
+            agent = source_from_result(result)
+        except Exception:
+            agent = None
         decision = result.terminal_decision
         if hasattr(decision, "decision"):
             decision_value = decision.decision
         else:
             decision_value = str(decision)
         if decision_value == TerminalDecision.COMPLETED.value:
-            return PresentationResult("COMPLETED", None, assurance=assurance)
+            return PresentationResult(
+                "COMPLETED", None, assurance=assurance, agent=agent
+            )
         if decision_value == TerminalDecision.BLOCKED.value:
             first_error = (
                 result.errors[0] if getattr(result, "errors", None) else None
@@ -295,6 +309,7 @@ class GovernedFrontDoorRuntimeBridge:
                 "BLOCKED",
                 first_error or "Governed execution was blocked",
                 assurance=assurance,
+                agent=agent,
             )
         # FAILED
         first_error = (
@@ -304,6 +319,7 @@ class GovernedFrontDoorRuntimeBridge:
             "FAILED",
             first_error or "Governed execution reported FAILED",
             assurance=assurance,
+            agent=agent,
         )
 
 
