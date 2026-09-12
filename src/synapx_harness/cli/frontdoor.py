@@ -45,10 +45,10 @@ from synapx_harness.cli.console import (
     CONSOLE_PROMPT,
     ConsoleEvent,
     ConsoleEventKind,
-    read_line_event,
     render_console_header,
     render_console_help,
 )
+from synapx_harness.cli.terminal_input import create_terminal_reader
 
 
 DISTRIBUTION_NAME: str = "synapx-harness"
@@ -325,13 +325,18 @@ def run_console(
 
     render_console_header(out, workspace_name=workspace_name)
 
-    def _next_event() -> ConsoleEvent:
-        if read_event is not None:
+    if read_event is not None:
+        # Injected seam (contract tests): the loop echoes the prompt marker
+        # so ``synapx>`` stays visible without terminal hardware.
+        def _next_event() -> ConsoleEvent:
+            out(CONSOLE_PROMPT, nl=False)
             return read_event()
-        return read_line_event()
+    else:
+        # Production path: the key-aware terminal reader renders its own
+        # prompt and fires standalone ESC with no Enter required.
+        _next_event = create_terminal_reader(CONSOLE_PROMPT, out)
 
     while True:
-        out(CONSOLE_PROMPT, nl=False)
         event = _next_event()
         kind = event.kind
         if kind in (
