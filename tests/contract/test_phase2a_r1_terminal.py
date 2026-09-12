@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import types
 from pathlib import Path
 from typing import Any
 
@@ -118,15 +119,24 @@ class TestR1T1StandaloneEscape:
         bindings = build_key_bindings()
         assert any(Keys.Escape in binding.keys for binding in bindings.bindings)
 
-    def test_escape_handler_requests_exit(self) -> None:
+    def test_escape_handler_exits_without_raising(self) -> None:
         from prompt_toolkit.keys import Keys
+
+        from synapx_harness.cli.terminal_input import EXIT_ESCAPE_SENTINEL
 
         bindings = build_key_bindings()
         binding = next(
             b for b in bindings.bindings if Keys.Escape in b.keys
         )
-        with pytest.raises(terminal_input_module._EscapePressed):
-            binding.handler(object())
+        seen: dict[str, Any] = {}
+
+        class _StubApp:
+            def exit(self, result: Any = None) -> None:
+                seen["result"] = result
+
+        event = types.SimpleNamespace(app=_StubApp())
+        binding.handler(event)
+        assert seen["result"] is EXIT_ESCAPE_SENTINEL
 
     def test_escape_token_line_still_exits(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -360,3 +370,220 @@ class TestR1BackendSeam:
         event = reader()
         assert seen["prompt"] == "synapx> "
         assert event.kind is ConsoleEventKind.QUIT
+
+
+class _StubApp:
+    """Minimal ``event.app`` double capturing ``exit(result=...)``."""
+
+    def __init__(self) -> None:
+        self.result: Any = None
+        self.calls = 0
+
+    def exit(self, result: Any = None) -> None:
+        self.calls += 1
+        self.result = result
+
+
+class _StubSession:
+    """``PromptSession`` double returning a fixed ``prompt()`` result."""
+
+    def __init__(self, result: Any) -> None:
+        self._result = result
+
+    def prompt(self) -> Any:
+        return self._result
+
+
+class TestR2T1EscapeHandlerNeverRaises:
+    def test_no_exception_escapes_escape_callback(self) -> None:
+        from prompt_toolkit.keys import Keys
+
+        from synapx_harness.cli.terminal_input import EXIT_ESCAPE_SENTINEL
+
+        bindings = build_key_bindings()
+        binding = next(
+            b for b in bindings.bindings if Keys.Escape in b.keys
+        )
+        app = _StubApp()
+        binding.handler(types.SimpleNamespace(app=app))
+        assert app.calls == 1
+        assert app.result is EXIT_ESCAPE_SENTINEL
+
+    def test_no_exception_escapes_interrupt_callback(self) -> None:
+        from prompt_toolkit.keys import Keys
+
+        from synapx_harness.cli.terminal_input import EXIT_INTERRUPT_SENTINEL
+
+        bindings = build_key_bindings()
+        binding = next(
+            b for b in bindings.bindings if Keys.ControlC in b.keys
+        )
+        app = _StubApp()
+        binding.handler(types.SimpleNamespace(app=app))
+        assert app.calls == 1
+        assert app.result is EXIT_INTERRUPT_SENTINEL
+
+    def test_forbidden_exception_pattern_absent_from_source(self) -> None:
+        path = CORE_ROOT / "src" / "synapx_harness" / "cli" / "terminal_input.py"
+        content = path.read_text(encoding="utf-8")
+        assert "_EscapePressed" not in content
+        assert "raise _EscapePressed" not in content
+        assert "Unhandled exception in event loop" not in content
+        assert "Press ENTER to continue" not in content
+
+
+class TestR2T2EscapeReturnsNormalizedExit:
+    def test_sentinel_result_maps_to_escape_event(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from synapx_harness.cli.terminal_input import EXIT_ESCAPE_SENTINEL
+
+        monkeypatch.setattr(
+            terminal_input_module,
+            "_build_session",
+            lambda *args, **kwargs: _StubSession(EXIT_ESCAPE_SENTINEL),
+        )
+        event = read_terminal_event()
+        assert event.kind is ConsoleEventKind.EXIT_ESCAPE
+
+
+class TestR2T3InterruptReturnsNormalizedExit:
+    def test_sentinel_result_maps_to_interrupt_event(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from synapx_harness.cli.terminal_input import EXIT_INTERRUPT_SENTINEL
+
+        monkeypatch.setattr(
+            terminal_input_module,
+            "_build_session",
+            lambda *args, **kwargs: _StubSession(EXIT_INTERRUPT_SENTINEL),
+        )
+        event = read_terminal_event()
+        assert event.kind is ConsoleEventKind.EXIT_INTERRUPT
+
+
+class TestR2T4EscapeTerminatesLoop:
+    def test_loop_returns_with_invoke_count_unchanged(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        runtime = _FakeRuntime([PresentationResult("COMPLETED", None)])
+        code = run_console(
+            workspace=tmp_path,
+            runtime=runtime,
+            read_event=_scripted_events(
+                ConsoleEvent(ConsoleEventKind.EXIT_ESCAPE)
+            ),
+        )
+        assert code == 0
+        assert runtime.tasks == []
+        capsys.readouterr()
+
+
+class TestR2T5InterruptTerminatesLoop:
+    def test_loop_returns_with_invoke_count_unchanged(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        runtime = _FakeRuntime([PresentationResult("COMPLETED", None)])
+        code = run_console(
+            workspace=tmp_path,
+            runtime=runtime,
+            read_event=_scripted_events(
+                ConsoleEvent(ConsoleEventKind.EXIT_INTERRUPT)
+            ),
+        )
+        assert code == 0
+        assert runtime.tasks == []
+        capsys.readouterr()
+
+
+class TestR2T6NoPostExitTaskConsumption:
+    def test_no_further_reads_after_exit(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """R2 incident regression: after EXIT the loop must be gone.
+
+        Historical failure: the console looked dead but stayed alive and
+        consumed later shell input as agent tasks. A reader that counts
+        its own polls proves the loop performs exactly one read before
+        terminating — no later input can ever reach ``runtime.invoke``.
+        """
+        runtime = _FakeRuntime([PresentationResult("COMPLETED", None)])
+        polls = 0
+
+        def _reader() -> ConsoleEvent:
+            nonlocal polls
+            polls += 1
+            return ConsoleEvent(ConsoleEventKind.EXIT_ESCAPE)
+
+        code = run_console(
+            workspace=tmp_path, runtime=runtime, read_event=_reader
+        )
+        assert code == 0
+        assert polls == 1
+        assert runtime.tasks == []
+        output = capsys.readouterr().out
+        assert "Unhandled exception in event loop" not in output
+        assert "Press ENTER to continue" not in output
+        assert output.count("synapx>") == 1
+
+
+class TestR2T7NormalTaskRemainsFunctional:
+    def test_task_dispatches_and_returns_to_prompt(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        runtime = _FakeRuntime([PresentationResult("COMPLETED", None)])
+        code = run_console(
+            workspace=tmp_path,
+            runtime=runtime,
+            read_event=_scripted_events("repair the widget", ":quit"),
+        )
+        assert code == 0
+        assert runtime.tasks == ["repair the widget"]
+        output = capsys.readouterr().out
+        assert "VERIFIED" in output
+        assert output.count("synapx>") >= 2
+
+
+class TestR2T8QuitUnchanged:
+    def test_quit_exits_zero_without_execution(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        runtime = _FakeRuntime([PresentationResult("COMPLETED", None)])
+        code = run_console(
+            workspace=tmp_path,
+            runtime=runtime,
+            read_event=_scripted_events(":quit"),
+        )
+        assert code == 0
+        assert runtime.tasks == []
+        capsys.readouterr()
+
+
+class TestR2T9OneShotUnchanged:
+    def test_task_option_does_not_enter_repl(self, tmp_path: Path) -> None:
+        result = _run_synapx_subprocess(
+            "--workspace", str(tmp_path), "--task", "hello", cwd=tmp_path
+        )
+        output = result.stdout + result.stderr
+        assert "synapx>" not in output
+        assert "NEEDS_ATTENTION" in output
+        assert result.returncode == 1
+
+
+class TestR2T10FalseVerifiedRegression:
+    def test_done_status_with_exit_never_verifies(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        runtime = _FakeRuntime([PresentationResult("DONE", "agent done")])
+        code = run_console(
+            workspace=tmp_path,
+            runtime=runtime,
+            read_event=_scripted_events(
+                "do work",
+                ConsoleEvent(ConsoleEventKind.EXIT_ESCAPE),
+            ),
+        )
+        assert code == 0
+        output = capsys.readouterr().out
+        assert "NEEDS_ATTENTION" in output
+        assert "VERIFIED" not in output
