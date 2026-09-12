@@ -207,6 +207,18 @@ class RedQualificationEvidence:
     failure_reason_matches_intended_defect: bool = False
     reason: str | None = None
     created_at: str = ""
+    # RQ8-P1-R3-R1 identity bindings (Sec 13). Defaulted so previously
+    # constructed evidence keeps its meaning; the governed wiring always
+    # supplies them.
+    work_contract_id: str = ""
+    work_contract_schema_version: str = ""
+    job_id: str = ""
+    task_id: str = ""
+    attempt_id: str = ""
+    expectation_source_type: str = ""
+    expectation_provenance_ref: str = ""
+    expectation_provenance_sha256: str = ""
+    command_receipt_id: str = ""
 
 
 def verification_command_fingerprint(command: list[str] | tuple[str, ...]) -> str:
@@ -240,6 +252,9 @@ def compare_red_qualification(
     observation: RedObservation,
     *,
     created_at: str,
+    work_contract_id: str = "",
+    work_contract_schema_version: str = "",
+    command_receipt_id: str = "",
 ) -> RedQualificationEvidence:
     """Deterministically compare expectation against observation.
 
@@ -272,6 +287,17 @@ def compare_red_qualification(
             failure_reason_matches_intended_defect=False,
             reason=reason,
             created_at=created_at,
+            work_contract_id=work_contract_id,
+            work_contract_schema_version=work_contract_schema_version,
+            job_id=observation.job_id,
+            task_id=observation.task_id,
+            attempt_id=observation.attempt_id,
+            expectation_source_type=expectation.source_type,
+            expectation_provenance_ref=expectation.provenance_source_ref,
+            expectation_provenance_sha256=(
+                expectation.provenance_source_sha256
+            ),
+            command_receipt_id=command_receipt_id,
         )
 
     if expectation.match_rule not in SUPPORTED_MATCH_RULES:
@@ -318,7 +344,80 @@ def compare_red_qualification(
         failure_reason_matches_intended_defect=True,
         reason=None,
         created_at=created_at,
+        work_contract_id=work_contract_id,
+        work_contract_schema_version=work_contract_schema_version,
+        job_id=observation.job_id,
+        task_id=observation.task_id,
+        attempt_id=observation.attempt_id,
+        expectation_source_type=expectation.source_type,
+        expectation_provenance_ref=expectation.provenance_source_ref,
+        expectation_provenance_sha256=expectation.provenance_source_sha256,
+        command_receipt_id=command_receipt_id,
     )
+
+
+def verify_workcontract_expectation_binding(
+    bound: dict[str, object] | None,
+    loaded_bytes: bytes,
+    loaded_path: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Verify staged bytes against the WorkContract binding (pure).
+
+    Returns ``(parsed_payload, None)`` iff the binding exists and every
+    bound field (sha256 over the exact loaded bytes, ref path, id,
+    version) matches; otherwise ``(None, cause)`` naming the first
+    mismatch. A staged file WITHOUT a binding (staged after the
+    WorkContract was built, or bound to another WorkContract) never
+    authorizes. JSON parsing happens here so hash/ref mismatches precede
+    syntax judgments deterministically.
+    """
+    if not isinstance(bound, dict) or not bound:
+        return None, (
+            "staged RED expectation is not WorkContract-bound "
+            "(no red_expectation binding on the WorkContract)"
+        )
+    try:
+        bound_id = bound["expectation_id"]
+        bound_version = bound["expectation_version"]
+        bound_ref = bound["expectation_ref"]
+        bound_sha = bound["expectation_sha256"]
+    except KeyError as exc:
+        return None, f"WorkContract RED binding is incomplete ({exc})"
+    if (
+        not isinstance(bound_id, str)
+        or not bound_id
+        or not isinstance(bound_ref, str)
+        or not bound_ref
+        or not isinstance(bound_sha, str)
+        or not bound_sha
+        or not isinstance(bound_version, int)
+        or isinstance(bound_version, bool)
+    ):
+        return None, "WorkContract RED binding fields are not well-formed"
+    if hashlib.sha256(loaded_bytes).hexdigest() != bound_sha:
+        return None, (
+            "RED expectation SHA does not match WorkContract binding "
+            "(artifact changed after WorkContract creation or swapped file)"
+        )
+    if loaded_path != bound_ref:
+        return None, (
+            "RED expectation ref does not match WorkContract binding"
+        )
+    try:
+        payload = json.loads(loaded_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        return None, f"malformed QualifiedRedExpectation: {exc}"
+    if not isinstance(payload, dict):
+        return None, "malformed QualifiedRedExpectation: not a JSON object"
+    if payload.get("expectation_id") != bound_id:
+        return None, (
+            "RED expectation id does not match WorkContract binding"
+        )
+    if payload.get("expectation_version") != bound_version:
+        return None, (
+            "RED expectation version does not match WorkContract binding"
+        )
+    return payload, None
 
 
 __all__ = [
@@ -333,4 +432,5 @@ __all__ = [
     "RedQualificationEvidence",
     "compare_red_qualification",
     "verification_command_fingerprint",
+    "verify_workcontract_expectation_binding",
 ]

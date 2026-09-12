@@ -118,6 +118,21 @@ class SourceRevisionRef(_StrictModel):
         return self
 
 
+class RedExpectationBinding(_StrictModel):
+    """WorkContract-bound RED expectation identity (RQ8-REDQ-001).
+
+    Binds one staged QualifiedRedExpectation file to exactly one
+    WorkContract: identity (id/version), location (ref), and bytes
+    (sha256). The runtime re-reads the file and denies on ANY mismatch,
+    so post-build swaps or cross-WorkContract reuse cannot authorize.
+    """
+
+    expectation_id: str = Field(min_length=1)
+    expectation_version: int
+    expectation_ref: str = Field(min_length=1)
+    expectation_sha256: str = Field(min_length=1)
+
+
 class WorkContract(_StrictModel):
     contract_type: Literal["CUSTOMOS_WORK_CONTRACT"] = "CUSTOMOS_WORK_CONTRACT"
     schema_version: Literal["0.1.0", "0.2.0"] = SCHEMA_VERSION_DEFAULT
@@ -154,6 +169,8 @@ class WorkContract(_StrictModel):
     permission_receipt_ref: str | None = None
     eligibility_receipt_ref: str | None = None
     execution_receipt_ref: str | None = None
+    red_policy: Literal["RED_REQUIRED"] | None = None
+    red_expectation: RedExpectationBinding | None = None
 
 
 class VerificationResult(_StrictModel):

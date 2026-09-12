@@ -72,6 +72,7 @@ from synapx_harness.adapters.codex.models import (
 from synapx_harness.adapters.codex.runtime import SubprocessCodexRuntime
 from synapx_harness.contracts.runtime_models import (
     ExecutionIdentity,
+    RedExpectationBinding,
     SourceRevisionRef,
     VerificationResult,
     WorkContract,
@@ -88,6 +89,7 @@ from synapx_harness.evidence.command_runner import (
     CommandResult,
     normalize_write_token_path,
     run_command,
+    run_controlled,
 )
 from synapx_harness.evidence.pytest_result_parser import (
     classify_pytest_failure_kind,
@@ -123,6 +125,7 @@ from synapx_harness.kernel.red_qualification import (
     RedQualificationEvidence,
     compare_red_qualification,
     verification_command_fingerprint,
+    verify_workcontract_expectation_binding,
 )
 from synapx_harness.kernel.terminal_finalizer import (
     TERMINAL_FINALIZER_ISSUER,
@@ -394,6 +397,9 @@ def build_first_slice_work_contract(
     execution_identity: ExecutionIdentity,
     source_revision: str,
     shared_understanding: SharedUnderstandingContext,
+    red_expectation_binding: dict[str, object] | None = None,
+    verification_command: list[str] | None = None,
+    workspace_root: Path | None = None,
 ) -> WorkContract:
     """Build a canonical first-slice WorkContract (schema 0.2.0, R0, TEST_REPAIR)."""
     if task_type := GOVERNED_TASK_TYPE:
@@ -420,6 +426,18 @@ def build_first_slice_work_contract(
     ]
     for rel in allowed_write_paths:
         scope.append(f"write:{rel}")
+    # RQ8-P1-R3-R1 Sec 12: the RED verifier must pass the same
+    # WorkContract tool/cwd gating as any controlled execution, so the
+    # resolved verifier launcher and the bound workspace enter the scope
+    # here (never injected by callers downstream).
+    if verification_command and workspace_root is not None:
+        launcher = verification_command[0]
+        if not isinstance(launcher, str) or not launcher:
+            raise ValueError(
+                "verification_command must start with a tool token"
+            )
+        scope.append(f"tool:{launcher}")
+        scope.append(f"path:{Path(workspace_root).resolve().as_posix()}")
 
     admitted_at = _now_iso()
     admission_receipt = make_default_admission_receipt(
@@ -430,30 +448,77 @@ def build_first_slice_work_contract(
         revision_verification_receipt=f"rct/{work_contract_id}/revision",
     )
 
-    return build_work_contract_fn(
-        work_contract_id=work_contract_id,
-        phase=GOVERNED_PHASE,
-        risk_class=GOVERNED_RISK_CLASS,
-        objective=task.strip(),
-        scope=scope,
-        success_criteria=[
-            "tests/test_calculator.py remains byte-identical",
-            "calculator.py passes the declared pytest suite",
-            "structured proposal is the only allowed mutation source",
-            "Codex process did not modify the workspace",
-            "verification_status=PASS, evidence_status=VALID, active_blocker_count=0",
-        ],
-        issuer=HARNESS_CORE_ADMISSION,
-        admission_receipt=admission_receipt,
-        receipt_refs={
-            "permission_receipt_ref": f"rct/{work_contract_id}/permission",
-            "eligibility_receipt_ref": f"rct/{work_contract_id}/eligibility",
-            "execution_receipt_ref": f"rct/{work_contract_id}/execution",
-        },
-        source_revision_ref=source_revision_ref,
-        task_type=GOVERNED_TASK_TYPE,
-        execution_identity=execution_identity,
+    return _bind_red_contract(
+        build_work_contract_fn(
+            work_contract_id=work_contract_id,
+            phase=GOVERNED_PHASE,
+            risk_class=GOVERNED_RISK_CLASS,
+            objective=task.strip(),
+            scope=scope,
+            success_criteria=[
+                "tests/test_calculator.py remains byte-identical",
+                "calculator.py passes the declared pytest suite",
+                "structured proposal is the only allowed mutation source",
+                "Codex process did not modify the workspace",
+                "verification_status=PASS, evidence_status=VALID, active_blocker_count=0",
+            ],
+            issuer=HARNESS_CORE_ADMISSION,
+            admission_receipt=admission_receipt,
+            receipt_refs={
+                "permission_receipt_ref": f"rct/{work_contract_id}/permission",
+                "eligibility_receipt_ref": f"rct/{work_contract_id}/eligibility",
+                "execution_receipt_ref": f"rct/{work_contract_id}/execution",
+            },
+            source_revision_ref=source_revision_ref,
+            task_type=GOVERNED_TASK_TYPE,
+            execution_identity=execution_identity,
+        ),
+        red_expectation_binding,
     )
+
+
+def _bind_red_contract(
+    work_contract: WorkContract,
+    red_expectation_binding: dict[str, object] | None,
+) -> WorkContract:
+    """Attach the first-slice RED policy and expectation binding.
+
+    RQ8-P1-R3-R1 Sec 5/9: RED_REQUIRED is a first-slice constant (no
+    canonical alternative admission contract exists, so RED qualification
+    is mandatory). The binding carries identity + bytes hash of the
+    staged expectation read at build time; the RED stage re-reads and
+    denies on ANY mismatch. Applied here, before the contract is used
+    anywhere, so no issued contract is ever mutated downstream.
+    """
+    work_contract.red_policy = "RED_REQUIRED"
+    if red_expectation_binding is not None:
+        try:
+            exp_id = red_expectation_binding["expectation_id"]
+            exp_version = red_expectation_binding["expectation_version"]
+            exp_ref = red_expectation_binding["expectation_ref"]
+            exp_sha = red_expectation_binding["expectation_sha256"]
+        except KeyError as exc:
+            raise ValueError(
+                f"RED expectation binding is incomplete ({exc})"
+            ) from exc
+        if (
+            not isinstance(exp_id, str)
+            or not exp_id
+            or not isinstance(exp_version, int)
+            or isinstance(exp_version, bool)
+            or not isinstance(exp_ref, str)
+            or not exp_ref
+            or not isinstance(exp_sha, str)
+            or not exp_sha
+        ):
+            raise ValueError("RED expectation binding fields are ill-typed")
+        work_contract.red_expectation = RedExpectationBinding(
+            expectation_id=exp_id,
+            expectation_version=exp_version,
+            expectation_ref=exp_ref,
+            expectation_sha256=exp_sha,
+        )
+    return work_contract
 
 
 # ---------------------------------------------------------------------------
@@ -877,6 +942,49 @@ def build_verification_result(
 # ---------------------------------------------------------------------------
 
 
+def _evidence_to_json_dict(
+    evidence: RedQualificationEvidence,
+) -> dict[str, object]:
+    """Project qualification evidence onto JSON-safe scalars.
+
+    RQ8-P1-R3-R1 Sec 16: envelope, same-run receipt, and runtime result
+    all project THE SAME evidence object (no replay, no recompute), so
+    the qualification identity is identical in all three places.
+    """
+    return {
+        "qualification_id": evidence.qualification_id,
+        "expectation_id": evidence.expectation_id,
+        "expectation_version": evidence.expectation_version,
+        "observation_id": evidence.observation_id,
+        "source_revision": evidence.source_revision,
+        "verification_command_fingerprint": (
+            evidence.verification_command_fingerprint
+        ),
+        "comparator_version": evidence.comparator_version,
+        "expected_exit_code": evidence.expected_exit_code,
+        "observed_exit_code": evidence.observed_exit_code,
+        "expected_failed_test_ids": list(evidence.expected_failed_test_ids),
+        "observed_failed_test_ids": list(evidence.observed_failed_test_ids),
+        "match_result": evidence.match_result,
+        "failure_reason_matches_intended_defect": (
+            evidence.failure_reason_matches_intended_defect
+        ),
+        "reason": evidence.reason,
+        "created_at": evidence.created_at,
+        "work_contract_id": evidence.work_contract_id,
+        "work_contract_schema_version": evidence.work_contract_schema_version,
+        "job_id": evidence.job_id,
+        "task_id": evidence.task_id,
+        "attempt_id": evidence.attempt_id,
+        "expectation_source_type": evidence.expectation_source_type,
+        "expectation_provenance_ref": evidence.expectation_provenance_ref,
+        "expectation_provenance_sha256": (
+            evidence.expectation_provenance_sha256
+        ),
+        "command_receipt_id": evidence.command_receipt_id,
+    }
+
+
 def build_evidence_envelope(
     *,
     work_contract_id: str,
@@ -885,6 +993,7 @@ def build_evidence_envelope(
     apply_receipt: ApplyReceipt | None,
     verification: VerificationOutcome,
     source_revision: str,
+    red_qualification: RedQualificationEvidence | None = None,
 ) -> dict[str, object]:
     """Build an ADMITTED evidence envelope (still pre-seal)."""
     envelope: dict[str, object] = {
@@ -896,6 +1005,14 @@ def build_evidence_envelope(
         "verification": verification.to_dict(),
         "integrity_status": "ADMITTED",
     }
+    if red_qualification is not None:
+        # RQ8-P1-R3-R1 Sec 15: the comparator evidence is sealed with the
+        # run envelope under its own qualification identity. Dataclasses
+        # serialize tuples as JSON arrays at seal time; the sealed bytes
+        # are the authority, never a recomputation.
+        envelope["red_qualification"] = _evidence_to_json_dict(
+            red_qualification
+        )
     if proposal is not None:
         envelope["proposal"] = {
             "valid": proposal.valid,
@@ -1147,6 +1264,14 @@ class GovernedExecutionResult:
             "primary_failure_stage": self.primary_failure_stage,
             "primary_failure_class": self.primary_failure_class,
             "primary_failure_message": self.primary_failure_message,
+            # RQ8-P1-R3-R1 Sec 16: same-run receipt projection of the
+            # qualification evidence (None when the run never qualified).
+            # Same object as the sealed envelope projection: one identity.
+            "red_qualification_evidence": (
+                None
+                if self.red_qualification_evidence is None
+                else _evidence_to_json_dict(self.red_qualification_evidence)
+            ),
         }
 
 
@@ -1192,56 +1317,87 @@ def _sanitize_path_component(value: str) -> str:
     return cleaned[:64] or "run"
 
 
+def _read_expectation_bytes(path: Path) -> bytes:
+    """Read staged expectation bytes (single seam, RQ8-P1-R3-R1 Sec 6/7).
+
+    Both the WorkContract-build-time binding read and the RED-stage
+    verification read go through this function so staging-after-build
+    and post-build swaps are observable and testable.
+    """
+    return Path(path).read_bytes()
+
+
+def _bind_expectation_for_workcontract(
+    workspace_root: Path,
+) -> dict[str, object] | None:
+    """Build-time binding: identity plus bytes hash, no judgment.
+
+    Returns None when no staged file exists or when it cannot even
+    supply an id/version pair (fail closed downstream as unbound).
+    Qualification itself is never decided here.
+    """
+    path = workspace_root / RED_EXPECTATION_FILENAME
+    try:
+        blob = _read_expectation_bytes(path)
+        payload = json.loads(blob.decode("utf-8"))
+        exp_id = payload["expectation_id"]
+        version = payload["expectation_version"]
+    except (OSError, UnicodeDecodeError, ValueError, KeyError, AttributeError):
+        return None
+    if (
+        not isinstance(exp_id, str)
+        or not exp_id
+        or not isinstance(version, int)
+        or isinstance(version, bool)
+    ):
+        return None
+    return {
+        "expectation_id": exp_id,
+        "expectation_version": version,
+        "expectation_ref": path.as_posix(),
+        "expectation_sha256": hashlib.sha256(blob).hexdigest(),
+    }
+
+
 def _observe_red_state(
     *,
     workspace_root: Path,
     verification_command: list[str],
     source_revision: str,
     execution_identity: ExecutionIdentity,
+    work_contract: WorkContract,
     work_contract_id: str,
     timeout_seconds: int,
-) -> RedObservation:
-    """Execute the authoritative verifier and structure the observation.
+) -> tuple[RedObservation, CommandResult]:
+    """Execute the authoritative verifier under WorkContract control.
 
-    RQ8-REDQ-001: the observation is built ONLY from a real verifier run
-    on the current tree (never from agent output). Stdout/stderr bytes are
-    persisted under the SHA-skipped ``.synapx_red_observation/`` prefix so
-    the evidence refs resolve without perturbing source-revision hashes.
+    RQ8-P1-R3-R1 Sec 9-12: the observation runs ONLY through the
+    canonical ``run_controlled`` authority (tool/cwd/risk/issuer gating
+    from the run's own WorkContract; no independent gating logic here).
+    Failed test IDs are parsed from the authoritative receipt stdout,
+    never from agent output. Returns ``(observation, receipt)`` so the
+    comparator can bind the command receipt identity.
     """
     cmd_str = subprocess.list2cmdline(verification_command)
     try:
-        proc = subprocess.run(
+        receipt = run_controlled(
             cmd_str,
-            shell=True,
-            capture_output=True,
-            cwd=workspace_root,
+            work_contract,
+            cwd=Path(workspace_root).resolve(),
             timeout=timeout_seconds,
+            capture_text=True,
         )
-        exit_code = proc.returncode
-        stdout_data = proc.stdout or b""
-        stderr_data = proc.stderr or b""
-    except subprocess.TimeoutExpired as exc:
-        exit_code = -1
-        raw_out = exc.stdout or b""
-        raw_err = exc.stderr or b""
-        stdout_data = (
-            raw_out.encode("utf-8", "replace")
-            if isinstance(raw_out, str)
-            else raw_out
-        )
-        stderr_data = (
-            raw_err.encode("utf-8", "replace")
-            if isinstance(raw_err, str)
-            else raw_err
-        )
+    except ValueError as exc:
+        raise RedObservationError(
+            f"controlled RED observation refused ({exc})"
+        ) from exc
     except OSError as exc:
         raise RedObservationError(
             f"RED verifier could not start: {exc}"
         ) from exc
-
-    stdout_text = stdout_data.decode("utf-8", "replace")
-    failed_ids = parse_pytest_failed_test_ids(stdout_text)
-    error_ids = parse_pytest_error_test_ids(stdout_text)
+    exit_code = receipt.exit_code
+    failed_ids = parse_pytest_failed_test_ids(receipt.stdout_text)
+    error_ids = parse_pytest_error_test_ids(receipt.stdout_text)
     failure_kind = classify_pytest_failure_kind(
         exit_code, failed_ids, error_ids
     )
@@ -1261,20 +1417,26 @@ def _observe_red_state(
     )
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
-        (log_dir / "stdout.log").write_bytes(stdout_data)
-        (log_dir / "stderr.log").write_bytes(stderr_data)
+        stdout_bytes = receipt.stdout_text.encode("utf-8")
+        stderr_bytes = receipt.stderr_text.encode("utf-8")
+        (log_dir / "stdout.log").write_bytes(stdout_bytes)
+        (log_dir / "stderr.log").write_bytes(stderr_bytes)
     except OSError as exc:
         raise RedObservationError(
             f"RED observation logs could not be recorded: {exc}"
         ) from exc
 
-    stdout_sha = hashlib.sha256(stdout_data).hexdigest()
     observation_id = hashlib.sha256(
         "\x00".join(
-            (source_revision, fingerprint, str(exit_code), stdout_sha)
+            (
+                source_revision,
+                fingerprint,
+                str(exit_code),
+                hashlib.sha256(stdout_bytes).hexdigest(),
+            )
         ).encode("utf-8")
     ).hexdigest()[:32]
-    return RedObservation(
+    observation = RedObservation(
         observation_id=observation_id,
         source_revision=source_revision,
         verification_command=tuple(verification_command),
@@ -1282,54 +1444,63 @@ def _observe_red_state(
         exit_code=exit_code,
         failure_kind=failure_kind,
         failed_test_ids=tuple(failed_ids),
-        stdout_sha256=stdout_sha,
-        stderr_sha256=hashlib.sha256(stderr_data).hexdigest(),
+        stdout_sha256=hashlib.sha256(stdout_bytes).hexdigest(),
+        stderr_sha256=hashlib.sha256(stderr_bytes).hexdigest(),
         job_id=execution_identity.job_id,
         task_id=execution_identity.task_id,
         attempt_id=execution_identity.attempt_id,
     )
+    return observation, receipt
 
 
 def _qualify_red_by_comparator(
     *,
     workspace_root: Path,
-    request: GovernedExecutionRequest,
-    work_contract_id: str,
+    verification_command: list[str] | None,
+    work_contract: WorkContract,
     execution_identity: ExecutionIdentity,
     pre_mutation_source_revision: str,
+    timeout_seconds: int,
 ) -> tuple[bool, str | None, RedQualificationEvidence | None]:
-    """Run the public-path RED qualification (RQ8-REDQ-001).
+    """Run the public-path RED qualification (RQ8-REDQ-001 + R3-R1).
 
-    Expectation (staged file) -> actual observation (real verifier run)
-    -> deterministic comparator -> evidence. Returns
+    WorkContract-bound expectation bytes -> binding verification ->
+    qualified expectation -> controlled actual observation ->
+    deterministic comparator -> evidence. Returns
     ``(qualified, denial_cause, evidence)``. Every failure mode fails
     closed with the first authoritative cause; staged files are only read.
     """
+    binding = work_contract.red_expectation
+    bound = (
+        binding.model_dump(mode="json") if binding is not None else None
+    )
     expectation_path = workspace_root / RED_EXPECTATION_FILENAME
     try:
-        raw = expectation_path.read_bytes()
+        loaded_bytes = _read_expectation_bytes(expectation_path)
     except OSError:
+        if bound is None:
+            return (
+                False,
+                "missing QualifiedRedExpectation "
+                f"at {expectation_path.as_posix()} (no WorkContract binding)",
+                None,
+            )
         return (
             False,
-            f"missing QualifiedRedExpectation at {expectation_path.as_posix()}",
+            "staged RED expectation missing "
+            "(bound at WorkContract creation)",
             None,
         )
-    try:
-        payload = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as exc:
-        return (
-            False,
-            f"malformed QualifiedRedExpectation: {exc}",
-            None,
-        )
+    payload, cause = verify_workcontract_expectation_binding(
+        bound, loaded_bytes, expectation_path.as_posix()
+    )
+    if cause is not None or payload is None:
+        return False, cause or "RED expectation binding failed", None
     try:
         expectation = QualifiedRedExpectation.from_dict(payload)
     except ExpectationError as exc:
         return False, f"unqualified RED expectation ({exc})", None
 
-    verification_command = _effective_verification_command(
-        request=request, workspace_root=workspace_root
-    )
     if verification_command is None:
         return (
             False,
@@ -1338,19 +1509,25 @@ def _qualify_red_by_comparator(
             None,
         )
     try:
-        observation = _observe_red_state(
+        observation, receipt = _observe_red_state(
             workspace_root=workspace_root,
             verification_command=verification_command,
             source_revision=pre_mutation_source_revision,
             execution_identity=execution_identity,
-            work_contract_id=work_contract_id,
-            timeout_seconds=request.timeout_seconds,
+            work_contract=work_contract,
+            work_contract_id=work_contract.work_contract_id,
+            timeout_seconds=timeout_seconds,
         )
     except RedObservationError as exc:
         return False, f"RED observation failed ({exc})", None
 
     evidence = compare_red_qualification(
-        expectation, observation, created_at=_now_iso()
+        expectation,
+        observation,
+        created_at=_now_iso(),
+        work_contract_id=work_contract.work_contract_id,
+        work_contract_schema_version=str(work_contract.schema_version),
+        command_receipt_id=receipt.command_id,
     )
     if evidence.match_result:
         return True, None, evidence
@@ -1457,6 +1634,14 @@ def run_governed_execution(
             proposal_parsing_attempted=False,
         )
 
+    # RQ8-P1-R3-R1 Sec 5/12: resolve the verifier before the WorkContract
+    # is built so the RED observation launcher and the bound workspace
+    # enter the contract scope (controlled-runner gating). Resolution is
+    # pure (request + workspace); the same command object is reused for
+    # the later observation and GREEN stages.
+    verification_command_for_scope = _effective_verification_command(
+        request=request, workspace_root=workspace_root
+    )
     work_contract = build_first_slice_work_contract(
         work_contract_id=work_contract_id,
         task=task_text,
@@ -1464,6 +1649,11 @@ def run_governed_execution(
         execution_identity=execution_identity,
         source_revision=before.source_revision,
         shared_understanding=shared_understanding,
+        red_expectation_binding=_bind_expectation_for_workcontract(
+            workspace_root
+        ),
+        verification_command=verification_command_for_scope,
+        workspace_root=workspace_root,
     )
 
     # ----- Codex process -----
@@ -1623,13 +1813,14 @@ def run_governed_execution(
             red_evidence,
         ) = _qualify_red_by_comparator(
             workspace_root=workspace_root,
-            request=request,
-            work_contract_id=work_contract_id,
+            verification_command=verification_command_for_scope,
+            work_contract=work_contract,
             execution_identity=execution_identity,
             # The agent is proven read-only above, so the pre-agent
             # content hash still binds the exact pre-mutation bytes the
             # observation run sees.
             pre_mutation_source_revision=pre_codex_source_revision,
+            timeout_seconds=request.timeout_seconds,
         )
 
     # RQ8-P1: a DENY admission MUST carry the authoritative cause so the
@@ -1774,6 +1965,7 @@ def run_governed_execution(
                 apply_receipt=mutation.apply_receipt,
                 verification=verification,
                 source_revision=before.source_revision,
+                red_qualification=red_evidence,
             )
         )
         decision, terminalization_input = finalize_terminal_decision(
@@ -1873,6 +2065,7 @@ def run_governed_execution(
             apply_receipt=mutation.apply_receipt,
             verification=verification,
             source_revision=before.source_revision,
+            red_qualification=red_evidence,
         )
     )
     decision, terminalization_input = finalize_terminal_decision(

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:synapx-harness:schema:runtime:work_contract",
   "title": "SynapX-Harness Work Contract",
-  "description": "Canonical WorkContract payload for CUSTOMOS_WORK_CONTRACT. Schema version 0.2.0 extends 0.1.0 with optional fields: execution_identity, source_revision_ref, task_type, admission_receipt, receipt_refs, issuer. Legacy 0.1.0 payloads (without those fields) continue to validate for backward compatibility (H2-X5/06 legacy_schema_preservation).",
+  "description": "Canonical WorkContract payload for CUSTOMOS_WORK_CONTRACT. Schema version 0.2.0 extends 0.1.0 with optional fields: execution_identity, source_revision_ref, task_type, admission_receipt, receipt_refs, issuer. RQ8-REDQ-001 adds optional red_policy and red_expectation binding fields under the same version. Legacy payloads (without those fields) continue to validate for backward compatibility (H2-X5/06 legacy_schema_preservation).",
   "type": "object",
   "additionalProperties": false,
   "unevaluatedProperties": false,
@@ -98,6 +98,26 @@
         "GUARDRAIL_TRIM",
         "DOCS_TRIM"
       ]
+    },
+    "red_policy": {
+      "type": ["string", "null"],
+      "enum": [null, "RED_REQUIRED"]
+    },
+    "red_expectation": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": [
+        "expectation_id",
+        "expectation_version",
+        "expectation_ref",
+        "expectation_sha256"
+      ],
+      "properties": {
+        "expectation_id": {"type": "string", "minLength": 1},
+        "expectation_version": {"type": "integer"},
+        "expectation_ref": {"type": "string", "minLength": 1},
+        "expectation_sha256": {"type": "string", "minLength": 1}
+      }
     }
   }
 }

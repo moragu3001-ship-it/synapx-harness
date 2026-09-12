@@ -52,6 +52,11 @@ class CommandResult:
     stdout_size: int
     stderr_size: int
     gate: str
+    # RQ8-P1-R3-R1: optionally captured decoded streams. Populated only
+    # when the caller passes capture_text=True; never part of to_dict()
+    # so command receipt lineage shape is unchanged.
+    stdout_text: str = ""
+    stderr_text: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -83,6 +88,7 @@ def run_command(
     command: str,
     cwd: Path | None = None,
     timeout: int | None = None,
+    capture_text: bool = False,
 ) -> CommandResult:
     started_at = datetime.now(UTC).isoformat()
     cwd_str = str(cwd) if cwd else str(Path.cwd())
@@ -129,6 +135,12 @@ def run_command(
         stdout_size=len(stdout_data),
         stderr_size=len(stderr_data),
         gate=gate,
+        stdout_text=(
+            stdout_data.decode("utf-8", "replace") if capture_text else ""
+        ),
+        stderr_text=(
+            stderr_data.decode("utf-8", "replace") if capture_text else ""
+        ),
     )
 
 
@@ -349,6 +361,7 @@ def run_controlled(
     work_contract: WorkContract | dict[str, object],
     cwd: Path | None = None,
     timeout: int | None = None,
+    capture_text: bool = False,
 ) -> CommandResult:
     """Execute a command under WorkContract authority (T07).
 
@@ -362,6 +375,9 @@ def run_controlled(
         JSON via ``model_dump(mode='json')``.
     cwd, timeout:
         Forwarded to :func:`run_command`.
+    capture_text:
+        Forwarded to :func:`run_command`. When True the decoded streams
+        are attached to the receipt (never part of ``to_dict()``).
 
     Raises
     ------
@@ -423,7 +439,8 @@ def run_controlled(
                 f"{allowed_paths} (scope|path) {cwd_str!r}"
             )
 
-    return run_command(command, cwd=cwd, timeout=timeout)
+    return run_command(command, cwd=cwd, timeout=timeout,
+                       capture_text=capture_text)
 
 
 __all__ = [
