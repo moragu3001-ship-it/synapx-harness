@@ -34,11 +34,21 @@ import json
 import os
 import re
 import sys
+from collections.abc import Callable
 from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Annotated, Protocol
 
 import typer
+
+from synapx_harness.cli.console import (
+    CONSOLE_PROMPT,
+    ConsoleEvent,
+    ConsoleEventKind,
+    read_line_event,
+    render_console_header,
+    render_console_help,
+)
 
 
 DISTRIBUTION_NAME: str = "synapx-harness"
@@ -269,6 +279,84 @@ def run(
     _enforce_public_exit_contract(presentation)
 
 
+def run_console(
+    workspace: Path | None = None,
+    runtime: RuntimePort | None = None,
+    *,
+    read_event: Callable[[], ConsoleEvent] | None = None,
+    echo: Callable[..., None] | None = None,
+) -> int:
+    """Run the RQ8 Phase 2A minimal interactive console.
+
+    Presentation / input shell only: the console renders the minimal header,
+    then repeatedly reads normalized idle-prompt events and dispatches each
+    ``TASK`` event to the workspace-bound canonical governed runtime — the
+    same bridge used by ``synapx run``. The existing terminal presentation
+    (``VERIFIED`` / ``FAILED`` / ``NEEDS_ATTENTION``) is rendered per task
+    and the loop returns to the ``synapx>`` prompt.
+
+    No session authority is created: every task is an independent governed
+    execution and a task never reuses another task's terminal status.
+
+    Returns the process exit code. Any graceful console exit (``:quit``,
+    ``ESC``, idle ``Ctrl+C``, EOF) returns ``0``; leaving the console never
+    re-computes terminal truth. An interrupt raised while governed
+    execution is running is deliberately NOT caught here, so the existing
+    canonical cancellation semantics are preserved verbatim (never mapped
+    to ``VERIFIED``, never promoted from a partial result).
+    """
+    out: Callable[..., None] = echo if echo is not None else typer.echo
+    _render_progress("Detecting workspace")
+    workspace_name, workspace_path = _detect_workspace(workspace)
+    out(f"Workspace: {workspace_name}")
+
+    _render_progress("Checking agent capability")
+    if runtime is None:
+        runtime = _build_runtime(workspace_path)
+    agent_available = runtime.is_available()
+    agent_name = "Codex" if agent_available else "Codex unavailable"
+    out(f"Agent: {agent_name}")
+
+    if not agent_available:
+        out("NEEDS_ATTENTION", err=True)
+        _exit_msg, guidance = _missing_codex_user_message()
+        out(f"Reason: {guidance}", err=True)
+        raise typer.Exit(code=1)
+
+    render_console_header(out, workspace_name=workspace_name)
+
+    def _next_event() -> ConsoleEvent:
+        if read_event is not None:
+            return read_event()
+        return read_line_event()
+
+    while True:
+        out(CONSOLE_PROMPT, nl=False)
+        event = _next_event()
+        kind = event.kind
+        if kind in (
+            ConsoleEventKind.QUIT,
+            ConsoleEventKind.EXIT_ESCAPE,
+            ConsoleEventKind.EXIT_INTERRUPT,
+            ConsoleEventKind.EOF,
+        ):
+            return 0
+        if kind is ConsoleEventKind.EMPTY:
+            continue
+        if kind is ConsoleEventKind.HELP:
+            render_console_help(out)
+            continue
+        if kind is ConsoleEventKind.UNKNOWN_COMMAND:
+            out(f"Unknown command: {event.text} (type :help for commands)")
+            continue
+        _render_progress("Working")
+        result = runtime.invoke(event.text)
+        _render_result(
+            _map_to_presentation(result),
+            result.reason if isinstance(result, PresentationResult) else None,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Readiness diagnostic (`synapx doctor`)
 # ---------------------------------------------------------------------------
@@ -442,7 +530,15 @@ def frontdoor(
     """SynapX Harness Front Door."""
     if ctx.invoked_subcommand is not None:
         return
-    run(workspace=workspace, task=task)
+    if task is not None:
+        run(workspace=workspace, task=task)
+        return
+    if sys.stdin.isatty():
+        raise typer.Exit(code=run_console(workspace=workspace))
+    # Non-TTY without --task: legacy fail-safe. A single stdin read drives a
+    # single governed execution and the process exits. The console loop is
+    # never entered when stdin is not interactive (headless / CI / piped).
+    run(workspace=workspace, task=None)
 
 
 _HELP_FLAG_RE = re.compile(r"--help\b")
