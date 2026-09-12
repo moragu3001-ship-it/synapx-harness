@@ -41,6 +41,10 @@ from typing import Annotated, Protocol
 
 import typer
 
+from synapx_harness.cli.agent_activity import (
+    activity_for_presentation_status,
+    render_activity_lines,
+)
 from synapx_harness.cli.assurance_presentation import render_assurance_lines
 from synapx_harness.cli.console import (
     CONSOLE_PROMPT,
@@ -166,6 +170,34 @@ def _render_progress(stage: str) -> None:
     typer.echo(f"{stage}...", err=True)
 
 
+def _render_activity_running() -> None:
+    """Emit the pre-invoke activity indication (stderr progress surface).
+
+    RQ8 Phase 2C Path B generic fallback: the Front Door observed the
+    invoke start but (with no async streaming) cannot observe anything
+    else until the runtime returns. Only the lifecycle state is shown;
+    no command / file / prose inference is emitted here.
+    """
+    typer.echo("Agent Activity", err=True)
+    typer.echo("  Running...", err=True)
+
+
+def _render_activity_terminal(status: object) -> None:
+    """Render the bounded generic activity section ahead of assurance.
+
+    Fail-closed: anything unrenderable produces no claim lines rather
+    than invented output. The activity section never carries assurance
+    or terminal authority; it only states the observed invoke lifecycle.
+    """
+    try:
+        for line in render_activity_lines(
+            activity_for_presentation_status(status)
+        ):
+            typer.echo(line)
+    except Exception:
+        return
+
+
 def _display_reason(
     reason: str | None, assurance: object | None
 ) -> str | None:
@@ -207,7 +239,10 @@ def _render_result(
     presentation: str,
     reason: str | None = None,
     assurance: object | None = None,
+    *,
+    activity_status: object = None,
 ) -> None:
+    _render_activity_terminal(activity_status)
     _render_assurance(assurance)
     typer.echo(presentation)
     reason = _display_reason(reason, assurance)
@@ -320,6 +355,7 @@ def run(
         raise typer.Exit(code=1)
 
     _render_progress("Working")
+    _render_activity_running()
     result = runtime.invoke(effective_task)
 
     # RQ8-P0 truthfulness: no separate "Verifying" stage is rendered here.
@@ -331,6 +367,9 @@ def run(
         presentation,
         result.reason if isinstance(result, PresentationResult) else None,
         result.assurance if isinstance(result, PresentationResult) else None,
+        activity_status=result.status
+        if isinstance(result, PresentationResult)
+        else None,
     )
     _enforce_public_exit_contract(presentation)
 
@@ -411,11 +450,15 @@ def run_console(
             out(f"Unknown command: {event.text} (type :help for commands)")
             continue
         _render_progress("Working")
+        _render_activity_running()
         result = runtime.invoke(event.text)
         _render_result(
             _map_to_presentation(result),
             result.reason if isinstance(result, PresentationResult) else None,
             result.assurance if isinstance(result, PresentationResult) else None,
+            activity_status=result.status
+            if isinstance(result, PresentationResult)
+            else None,
         )
 
 
@@ -673,6 +716,7 @@ def _render_governed_result(presentation: PresentationResult) -> str:
     public exit contract in one place (RQ5-R2 §8).
     """
     presentation_label = PRESENTATION_MAP.get(presentation.status, "NEEDS_ATTENTION")
+    _render_activity_terminal(getattr(presentation, "status", None))
     _render_assurance(presentation.assurance)
     typer.echo(presentation_label)
     display_reason = _display_reason(presentation.reason, presentation.assurance)
@@ -727,6 +771,7 @@ def governed_callback(
     typer.echo(f"Workspace: {workspace_name}")
     runtime = _build_governed_runtime(workspace_path)
 
+    _render_activity_running()
     if receipt_out is not None:
         # Duck-type the runtime: the canonical ``GovernedFrontDoorRuntimeBridge``
         # exposes ``invoke_governed_with_result``; the legacy
