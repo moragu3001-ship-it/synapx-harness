@@ -191,6 +191,62 @@ def is_valid_verification_summary(data: dict[str, object]) -> tuple[bool, list[s
     return len(violations) == 0, violations
 
 
+_FAILED_TEST_LINE_RE = re.compile(r"^FAILED\s+(\S+)", re.MULTILINE)
+_ERROR_TEST_LINE_RE = re.compile(r"^ERROR\s+(\S+)", re.MULTILINE)
+
+
+def parse_pytest_failed_test_ids(log_content: str) -> list[str]:
+    """Extract sorted unique failed test node IDs from pytest output.
+
+    Reads only the deterministic ``short test summary info`` lines of the
+    form ``FAILED <node-id> ...``. No traceback interpretation, no
+    semantic matching. Returns [] when no such lines exist.
+    """
+    if not isinstance(log_content, str) or not log_content:
+        return []
+    return sorted(set(_FAILED_TEST_LINE_RE.findall(log_content)))
+
+
+def parse_pytest_error_test_ids(log_content: str) -> list[str]:
+    """Extract sorted unique errored test node IDs (``ERROR <node-id>``)."""
+    if not isinstance(log_content, str) or not log_content:
+        return []
+    return sorted(set(_ERROR_TEST_LINE_RE.findall(log_content)))
+
+
+def classify_pytest_failure_kind(
+    exit_code: int,
+    failed_test_ids: list[str],
+    error_test_ids: list[str],
+) -> str:
+    """Classify a pytest run into a bounded failure kind.
+
+    Deterministic, syntactic only (exit code plus summary-line presence):
+
+    * ``TEST_FAILURE`` iff exit_code == 1 with at least one failed ID and
+      no error IDs (a clean test-failure signal).
+    * ``COLLECTION_ERROR`` iff exit_code == 2, or any error IDs exist.
+    * ``INFRASTRUCTURE_ERROR`` iff exit_code is 3, 4, 5, or negative
+      (internal/usage/no-tests/timeout).
+    * ``UNKNOWN`` otherwise (including exit 0: nothing failed to classify,
+      and exit 1 without usable IDs).
+
+    Only ``TEST_FAILURE`` can ever satisfy RED admission; every other kind
+    fails closed downstream.
+    """
+    failed = [i for i in (failed_test_ids or []) if isinstance(i, str) and i]
+    errors = [i for i in (error_test_ids or []) if isinstance(i, str) and i]
+    if exit_code == 1 and failed and not errors:
+        return "TEST_FAILURE"
+    if exit_code == 2:
+        return "COLLECTION_ERROR"
+    if isinstance(exit_code, int) and (exit_code in (3, 4, 5) or exit_code < 0):
+        return "INFRASTRUCTURE_ERROR"
+    if errors:
+        return "COLLECTION_ERROR"
+    return "UNKNOWN"
+
+
 def is_exit_code_consistent(exit_code: object) -> bool:
     """T08 check 13: process exit consistency (only 0 or 1 accepted)."""
     return isinstance(exit_code, int) and exit_code in (0, 1)
@@ -215,9 +271,12 @@ def is_semantic_result_consistent(
 __all__ = [
     "PytestSummary",
     "VerificationSummary",
+    "classify_pytest_failure_kind",
     "is_exit_code_consistent",
     "is_semantic_result_consistent",
     "is_valid_verification_summary",
+    "parse_pytest_error_test_ids",
+    "parse_pytest_failed_test_ids",
     "parse_pytest_log",
     "parse_pytest_log_file",
 ]

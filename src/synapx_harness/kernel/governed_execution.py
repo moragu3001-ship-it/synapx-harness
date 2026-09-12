@@ -89,6 +89,11 @@ from synapx_harness.evidence.command_runner import (
     normalize_write_token_path,
     run_command,
 )
+from synapx_harness.evidence.pytest_result_parser import (
+    classify_pytest_failure_kind,
+    parse_pytest_error_test_ids,
+    parse_pytest_failed_test_ids,
+)
 from synapx_harness.evidence.evidence_validator import (
     CORE_EVIDENCE_SEALER,
     seal_evidence,
@@ -109,6 +114,15 @@ from synapx_harness.kernel.mutation_proposal_contract import (
     build_proposal_instruction,
     parse_allowed_write_paths,
     validate_mutation_proposal,
+)
+from synapx_harness.kernel.red_qualification import (
+    RED_EXPECTATION_FILENAME,
+    ExpectationError,
+    QualifiedRedExpectation,
+    RedObservation,
+    RedQualificationEvidence,
+    compare_red_qualification,
+    verification_command_fingerprint,
 )
 from synapx_harness.kernel.terminal_finalizer import (
     TERMINAL_FINALIZER_ISSUER,
@@ -298,7 +312,8 @@ def _fixture_root_sha(repository_root: Path) -> str:
 
     Cache / VCS directories that external tools (Codex, pytest, Python)
     may create mid-run, plus internal SynapX run-state artifacts
-    (``.fixture_sha_before.json``, ``.synapx_red_evidence.json``, etc.),
+    (``.fixture_sha_before.json``, ``.synapx_red_evidence.json``,
+    ``.synapx_red_observation/``, etc.),
     are skipped deterministically so the SHA stays stable across the
     run lifecycle and does not depend on when the artifact was written.
     """
@@ -314,6 +329,7 @@ def _fixture_root_sha(repository_root: Path) -> str:
             ".pytest_cache",
             ".mypy_cache",
             ".tox",
+            ".synapx_red_observation",
         }
     )
     skip_file_prefixes = (".fixture_sha_", ".synapx_", ".synapx-cache-")
@@ -785,6 +801,7 @@ def verify_workspace(
     verification_command: list[str],
     red_qualification_ref: str,
     timeout_seconds: int = 120,
+    red_qualified: bool | None = None,
 ) -> VerificationOutcome:
     """Run the canonical independent verification command.
 
@@ -793,9 +810,11 @@ def verify_workspace(
 
     For first-slice TEST_REPAIR the verification command is expected to be
     ``[sys.executable, "-m", "pytest", "-q"]``; the exit code drives the
-    PASS / FAIL status. ``red_qualification_ref`` must point at a JSON file
-    capturing the pre-mutation RED state; ``red_qualified`` is derived from
-    that artifact (RQ4-R2-C2-R1 Repair A).
+    PASS / FAIL status. ``red_qualified`` is a lineage-only flag: when the
+    caller supplies the admission-time RED basis it is recorded verbatim;
+    otherwise it is derived from the legacy artifact (historical
+    compatibility). It never authorizes anything downstream -- the
+    Terminal Finalizer contains zero red_qualified references.
     """
     cmd_str = subprocess.list2cmdline(verification_command)
     cmd_result = run_command(
@@ -804,12 +823,13 @@ def verify_workspace(
         timeout=timeout_seconds,
     )
 
-    try:
-        red_qualified = derive_red_qualification_from_evidence(
-            red_qualification_ref
-        )
-    except Exception:
-        red_qualified = False
+    if red_qualified is None:
+        try:
+            red_qualified = derive_red_qualification_from_evidence(
+                red_qualification_ref
+            )
+        except Exception:
+            red_qualified = False
 
     if cmd_result.exit_code == 0:
         verification_status = "PASS"
@@ -1039,6 +1059,10 @@ class GovernedExecutionResult:
     primary_failure_stage: str | None = None
     primary_failure_class: str | None = None
     primary_failure_message: str | None = None
+    # RQ8-REDQ-001: comparator-derived RED qualification evidence for the
+    # run (None on legacy-seam paths and on runs that never qualified).
+    # Read-only lineage surface; the sealed envelope shape is unchanged.
+    red_qualification_evidence: Any = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -1154,6 +1178,183 @@ def _derive_red_with_cause(
         f"RED evidence at {red_qualification_ref} does not qualify "
         "(requires pytest exit_code=1 with matched defect signature)",
     )
+
+
+class RedObservationError(RuntimeError):
+    """Raised when a RED observation run cannot produce evidence."""
+
+
+def _sanitize_path_component(value: str) -> str:
+    """Bound a free string for use as a single path component."""
+    cleaned = "".join(
+        c if (c.isalnum() or c in ("_", "-", ".")) else "_" for c in value
+    )
+    return cleaned[:64] or "run"
+
+
+def _observe_red_state(
+    *,
+    workspace_root: Path,
+    verification_command: list[str],
+    source_revision: str,
+    execution_identity: ExecutionIdentity,
+    work_contract_id: str,
+    timeout_seconds: int,
+) -> RedObservation:
+    """Execute the authoritative verifier and structure the observation.
+
+    RQ8-REDQ-001: the observation is built ONLY from a real verifier run
+    on the current tree (never from agent output). Stdout/stderr bytes are
+    persisted under the SHA-skipped ``.synapx_red_observation/`` prefix so
+    the evidence refs resolve without perturbing source-revision hashes.
+    """
+    cmd_str = subprocess.list2cmdline(verification_command)
+    try:
+        proc = subprocess.run(
+            cmd_str,
+            shell=True,
+            capture_output=True,
+            cwd=workspace_root,
+            timeout=timeout_seconds,
+        )
+        exit_code = proc.returncode
+        stdout_data = proc.stdout or b""
+        stderr_data = proc.stderr or b""
+    except subprocess.TimeoutExpired as exc:
+        exit_code = -1
+        raw_out = exc.stdout or b""
+        raw_err = exc.stderr or b""
+        stdout_data = (
+            raw_out.encode("utf-8", "replace")
+            if isinstance(raw_out, str)
+            else raw_out
+        )
+        stderr_data = (
+            raw_err.encode("utf-8", "replace")
+            if isinstance(raw_err, str)
+            else raw_err
+        )
+    except OSError as exc:
+        raise RedObservationError(
+            f"RED verifier could not start: {exc}"
+        ) from exc
+
+    stdout_text = stdout_data.decode("utf-8", "replace")
+    failed_ids = parse_pytest_failed_test_ids(stdout_text)
+    error_ids = parse_pytest_error_test_ids(stdout_text)
+    failure_kind = classify_pytest_failure_kind(
+        exit_code, failed_ids, error_ids
+    )
+    try:
+        fingerprint = verification_command_fingerprint(
+            list(verification_command)
+        )
+    except ValueError as exc:
+        raise RedObservationError(
+            f"RED verifier command is not fingerprintable: {exc}"
+        ) from exc
+
+    log_dir = (
+        workspace_root
+        / ".synapx_red_observation"
+        / _sanitize_path_component(work_contract_id)
+    )
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / "stdout.log").write_bytes(stdout_data)
+        (log_dir / "stderr.log").write_bytes(stderr_data)
+    except OSError as exc:
+        raise RedObservationError(
+            f"RED observation logs could not be recorded: {exc}"
+        ) from exc
+
+    stdout_sha = hashlib.sha256(stdout_data).hexdigest()
+    observation_id = hashlib.sha256(
+        "\x00".join(
+            (source_revision, fingerprint, str(exit_code), stdout_sha)
+        ).encode("utf-8")
+    ).hexdigest()[:32]
+    return RedObservation(
+        observation_id=observation_id,
+        source_revision=source_revision,
+        verification_command=tuple(verification_command),
+        verification_command_fingerprint=fingerprint,
+        exit_code=exit_code,
+        failure_kind=failure_kind,
+        failed_test_ids=tuple(failed_ids),
+        stdout_sha256=stdout_sha,
+        stderr_sha256=hashlib.sha256(stderr_data).hexdigest(),
+        job_id=execution_identity.job_id,
+        task_id=execution_identity.task_id,
+        attempt_id=execution_identity.attempt_id,
+    )
+
+
+def _qualify_red_by_comparator(
+    *,
+    workspace_root: Path,
+    request: GovernedExecutionRequest,
+    work_contract_id: str,
+    execution_identity: ExecutionIdentity,
+    pre_mutation_source_revision: str,
+) -> tuple[bool, str | None, RedQualificationEvidence | None]:
+    """Run the public-path RED qualification (RQ8-REDQ-001).
+
+    Expectation (staged file) -> actual observation (real verifier run)
+    -> deterministic comparator -> evidence. Returns
+    ``(qualified, denial_cause, evidence)``. Every failure mode fails
+    closed with the first authoritative cause; staged files are only read.
+    """
+    expectation_path = workspace_root / RED_EXPECTATION_FILENAME
+    try:
+        raw = expectation_path.read_bytes()
+    except OSError:
+        return (
+            False,
+            f"missing QualifiedRedExpectation at {expectation_path.as_posix()}",
+            None,
+        )
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        return (
+            False,
+            f"malformed QualifiedRedExpectation: {exc}",
+            None,
+        )
+    try:
+        expectation = QualifiedRedExpectation.from_dict(payload)
+    except ExpectationError as exc:
+        return False, f"unqualified RED expectation ({exc})", None
+
+    verification_command = _effective_verification_command(
+        request=request, workspace_root=workspace_root
+    )
+    if verification_command is None:
+        return (
+            False,
+            "no trustworthy verification command for target repository; "
+            "RED observation cannot run",
+            None,
+        )
+    try:
+        observation = _observe_red_state(
+            workspace_root=workspace_root,
+            verification_command=verification_command,
+            source_revision=pre_mutation_source_revision,
+            execution_identity=execution_identity,
+            work_contract_id=work_contract_id,
+            timeout_seconds=request.timeout_seconds,
+        )
+    except RedObservationError as exc:
+        return False, f"RED observation failed ({exc})", None
+
+    evidence = compare_red_qualification(
+        expectation, observation, created_at=_now_iso()
+    )
+    if evidence.match_result:
+        return True, None, evidence
+    return False, f"RED qualification failed ({evidence.reason})", evidence
 
 
 @dataclass
@@ -1388,13 +1589,16 @@ def run_governed_execution(
             agent_stderr_sha256=agent_stderr_sha256,
         )
 
-    # ----- RED qualification (RQ4-R2-C2-R1 Repair A; RQ8-P1-R1) -----
-    # Authority rule: the harness only READS staged RED evidence. The
-    # intended-defect binding is asserted by whoever stages the artifact
-    # (task/fixture author or operator who knows the intended defect, per
-    # the run_red_evidence.py precedent); a bare failing suite is NEVER
-    # equated with a matched defect, and staged artifacts are never
-    # created, overwritten, or repaired here.
+    # ----- RED qualification (RQ8-REDQ-001) -----
+    # Three-tier authority:
+    #  * explicit red_qualified_override -> caller-asserted test seam
+    #    (unchanged, non-authoritative; the public bridge never sends it).
+    #  * explicit red_qualification_ref -> legacy caller-directed
+    #    derivation (unchanged, non-authoritative historical seam).
+    #  * default path (the public governed path) -> deterministic
+    #    comparator over the staged QualifiedRedExpectation plus an actual
+    #    RedObservation. Legacy .synapx_red_evidence.json booleans NEVER
+    #    authorize here (Sec 17).
     if request.red_qualification_ref is None:
         red_qualification_ref = (
             workspace_root / ".synapx_red_evidence.json"
@@ -1403,16 +1607,29 @@ def run_governed_execution(
         red_qualification_ref = request.red_qualification_ref
 
     red_denial_cause: str | None = None
+    red_evidence: RedQualificationEvidence | None = None
     if request.red_qualified_override is not None:
         red_qualified = bool(request.red_qualified_override)
         if not red_qualified:
             red_denial_cause = "red_qualified_override=False"
-    else:
-        # Explicit refs and the public default path share one read-only
-        # derivation: staged qualified -> honor; missing / unreadable /
-        # malformed / non-qualifying -> fail closed with the cause.
+    elif request.red_qualification_ref is not None:
         red_qualified, red_denial_cause = _derive_red_with_cause(
             red_qualification_ref
+        )
+    else:
+        (
+            red_qualified,
+            red_denial_cause,
+            red_evidence,
+        ) = _qualify_red_by_comparator(
+            workspace_root=workspace_root,
+            request=request,
+            work_contract_id=work_contract_id,
+            execution_identity=execution_identity,
+            # The agent is proven read-only above, so the pre-agent
+            # content hash still binds the exact pre-mutation bytes the
+            # observation run sees.
+            pre_mutation_source_revision=pre_codex_source_revision,
         )
 
     # RQ8-P1: a DENY admission MUST carry the authoritative cause so the
@@ -1547,6 +1764,7 @@ def run_governed_execution(
             verification_command=verification_command,
             red_qualification_ref=red_qualification_ref,
             timeout_seconds=request.timeout_seconds,
+            red_qualified=red_qualified,
         )
         sealed = seal_execution_evidence(
             build_evidence_envelope(
@@ -1591,6 +1809,7 @@ def run_governed_execution(
             terminalization_input=terminalization_input,
             errors=[mutation.error or "mutation failed"]
             + list(mutation.validation_blockers),
+            red_qualification_evidence=red_evidence,
         )
         result.process_started = agent_process_started
         result.failure_class = agent_failure_class
@@ -1642,6 +1861,7 @@ def run_governed_execution(
         verification_command=verification_command,
         red_qualification_ref=red_qualification_ref,
         timeout_seconds=request.timeout_seconds,
+        red_qualified=red_qualified,
     )
 
     # ----- Evidence seal + terminal decision (RQ4 §22) -----
@@ -1687,12 +1907,13 @@ def run_governed_execution(
         admission_receipt=mutation.admission_receipt,
         path_gate_receipt=mutation.path_gate_receipt,
         apply_receipt=mutation.apply_receipt,
-        verification=verification,
-        sealed_evidence=sealed,
-        terminal_decision=decision,
-        terminalization_input=terminalization_input,
-        errors=[],
-    )
+            verification=verification,
+            sealed_evidence=sealed,
+            terminal_decision=decision,
+            terminalization_input=terminalization_input,
+            errors=[],
+        )
+    result.red_qualification_evidence = red_evidence
     # RQ8-R1-R2-R2-R1 (Q2): carry truthful stage truth on the positive path
     # as well. The mutation chain ran to completion and the independent
     # verifier ran the resolved command.
