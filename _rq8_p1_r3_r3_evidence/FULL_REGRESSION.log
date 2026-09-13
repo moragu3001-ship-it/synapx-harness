@@ -1,0 +1,34 @@
+........................................................................ [  5%]
+........................................................................ [ 11%]
+...................................................................s.... [ 17%]
+........................................................................ [ 22%]
+........................................................................ [ 28%]
+........................................................................ [ 34%]
+........................................................................ [ 39%]
+........................................................................ [ 45%]
+........................................................x............... [ 51%]
+........................................................................ [ 56%]
+........................................................................ [ 62%]
+........................................................................ [ 68%]
+........................................................................ [ 73%]
+........................................................................ [ 79%]
+........................................................................ [ 85%]
+........................................................................ [ 90%]
+........................................................................ [ 96%]
+.............................................                            [100%]
+============================== warnings summary ===============================
+tests/contract/test_rq4_r2_c3_r1_truth.py::TestP2P3N1ToN6Mutants::test_each_mutant_returns_FAIL_via_canonical_verifier
+tests/contract/test_rq4_r2_c3_r1_truth.py::TestP2P3N1ToN6Mutants::test_aggregator_detects_all_six_negatives
+  C:\Users\morag\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\zipfile\__init__.py:1624: UserWarning: Duplicate name: 'synapx-harness/README.md'
+    return self._open_to_write(zinfo, force_zip64=force_zip64)
+
+tests/negative/test_r4_manifest_and_zip_bypass.py::test_duplicate_actual_zip_entry_fails
+  C:\Users\morag\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\zipfile\__init__.py:1624: UserWarning: Duplicate name: 'synapx-harness/test.py'
+    return self._open_to_write(zinfo, force_zip64=force_zip64)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+SKIPPED [1] tests\contract\test_lane_d_codex_adapter.py:669: real Codex probe requires LANE_D_REAL_PROBE=1 and live auth
+XFAIL tests/contract/test_rq4_r2_c3_r2_truth.py::TestR211DirtyCheckoutRejected::test_clean_checkout_passes - source checkout is intentionally dirty during R2 source edits; re-run after commit lands.
+1267 passed, 1 skipped, 1 xfailed, 3 warnings in 182.91s (0:03:02)
+warning: `VIRTUAL_ENV=C:/krag_work/rq8_itsdangerous_fixture/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead

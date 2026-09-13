@@ -1,0 +1,9 @@
+{
+  "head": "95431b37e389c43cd43f039d616180e5e6670f2f",
+  "tree": "b697e43abec461a8e971f75b4938ab985ca33785",
+  "parent": "1060f8e2211c532daf5dcca19ae7184e050a08e2",
+  "pushed": false,
+  "push_policy": "Not pushed: R3-R3 Owner Review package is BLOCKED on canonical seed custody (C:\\rq8\\seeds\\RQ8_ITS_DANGEROUS_COMPRESSED_PAYLOAD_SEED.patch missing).",
+  "origin_main_at_build": "b9c16832bd576b1b3fd7762624efbb4974188122",
+  "scope": "RQ8-P1-R3-R3 (Phase A + Phase B code repair only; Phase C seed custody BLOCKED)"
+}

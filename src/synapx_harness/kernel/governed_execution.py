@@ -52,53 +52,54 @@ import json
 import os
 import subprocess
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from synapx_harness.adapters.codex.contract import CodexAdapter
 from synapx_harness.adapters.codex.models import (
     AGENT_RUNTIME_SCHEMA_VERSION,
+    DEFAULT_MAX_OUTPUT_BYTES,
     AgentContext,
     AgentExecutionContext,
     AgentInvocation,
     AgentLimits,
     AgentRequest,
-    AgentResult,
     AgentTask,
     AgentWorkspace,
-    DEFAULT_MAX_OUTPUT_BYTES,
 )
 from synapx_harness.adapters.codex.runtime import SubprocessCodexRuntime
-from synapx_harness.contracts.runtime_models import (
-    ExecutionIdentity,
-    RedExpectationBinding,
-    SourceRevisionRef,
-    VerificationResult,
-    WorkContract,
-    build_source_revision_ref,
-    build_verification_result as _build_verification_result,
-)
 from synapx_harness.context.models import (
     CONTEXT_CONTRACT_TYPE,
     CONTEXT_SCHEMA_VERSION,
     SharedUnderstandingContext,
 )
 from synapx_harness.context.scanner import DeterministicRepositoryScanner
+from synapx_harness.contracts.runtime_models import (
+    ExecutionIdentity,
+    RedExpectationBinding,
+    VerificationResult,
+    WorkContract,
+    build_source_revision_ref,
+)
+from synapx_harness.contracts.runtime_models import (
+    build_verification_result as _build_verification_result,
+)
 from synapx_harness.evidence.command_runner import (
     CommandResult,
     normalize_write_token_path,
     run_command,
     run_controlled,
 )
+from synapx_harness.evidence.evidence_validator import (
+    CORE_EVIDENCE_SEALER,
+    seal_evidence,
+)
 from synapx_harness.evidence.pytest_result_parser import (
     classify_pytest_failure_kind,
     parse_pytest_error_test_ids,
     parse_pytest_failed_test_ids,
-)
-from synapx_harness.evidence.evidence_validator import (
-    CORE_EVIDENCE_SEALER,
-    seal_evidence,
 )
 from synapx_harness.kernel.mutation_authority import (
     AdmissionReceipt,
@@ -128,7 +129,6 @@ from synapx_harness.kernel.red_qualification import (
     verify_workcontract_expectation_binding,
 )
 from synapx_harness.kernel.terminal_finalizer import (
-    TERMINAL_FINALIZER_ISSUER,
     TerminalDecision,
     finalize_from_sealed_evidence,
 )
@@ -136,8 +136,10 @@ from synapx_harness.kernel.work_contract_builder import (
     CANONICAL_SCHEMA_VERSION,
     FIRST_SLICE_ADMISSIBLE_TASK_TYPES,
     HARNESS_CORE_ADMISSION,
-    build as build_work_contract_fn,
     make_default_admission_receipt,
+)
+from synapx_harness.kernel.work_contract_builder import (
+    build as build_work_contract_fn,
 )
 
 # ---------------------------------------------------------------------------
@@ -946,14 +948,16 @@ def _receipt_to_json_dict(
     receipt: CommandResult,
     observation: RedObservation,
 ) -> dict[str, object]:
-    """Project ONE actual controlled receipt (RQ8-P1-R3-R2 Sec 8).
+    """Project ONE actual controlled receipt (RQ8-P1-R3-R2 Sec 8,
+    RQ8-P1-R3-R3 §13/§14).
 
-    No re-run, no recomputation, no synthetic receipt: the command
-    identity comes from the receipt that produced the observation, and
-    the artifact hashes/sizes come from the observation's persisted
-    files (whose bytes the observer hashed at write time). The
-    file-byte hashes are authoritative for the sealed refs; the receipt
-    also carries the raw-run hashes in-process.
+    RQ8-P1-R3-R3 §13: the sealed ``red_observation_receipt`` is a
+    bounded projection of the actual controlled ``CommandResult`` --
+    stdout ref / sha / size come DIRECTLY from the receipt's
+    authoritative artifact identity. The observation is kept only for
+    ``command_receipt_id`` parity with the qualification evidence;
+    observation fields are NEVER used as authoritative receipt
+    references.
     """
     return {
         "command_id": receipt.command_id,
@@ -961,14 +965,14 @@ def _receipt_to_json_dict(
         "working_directory": receipt.working_directory,
         "exit_code": receipt.exit_code,
         "stdout_artifact": {
-            "ref": observation.stdout_ref,
-            "sha256": observation.stdout_sha256,
-            "size_bytes": observation.stdout_size_bytes,
+            "ref": receipt.stdout_path,
+            "sha256": receipt.stdout_sha256,
+            "size_bytes": receipt.stdout_size,
         },
         "stderr_artifact": {
-            "ref": observation.stderr_ref,
-            "sha256": observation.stderr_sha256,
-            "size_bytes": observation.stderr_size_bytes,
+            "ref": receipt.stderr_path,
+            "sha256": receipt.stderr_sha256,
+            "size_bytes": receipt.stderr_size,
         },
         "gate": receipt.gate,
     }
@@ -1415,14 +1419,22 @@ def _observe_red_state(
 ) -> tuple[RedObservation, CommandResult]:
     """Execute the authoritative verifier under WorkContract control.
 
-    RQ8-P1-R3-R1 Sec 9-12: the observation runs ONLY through the
-    canonical ``run_controlled`` authority (tool/cwd/risk/issuer gating
-    from the run's own WorkContract; no independent gating logic here).
-    Failed test IDs are parsed from the authoritative receipt stdout,
-    never from agent output. Returns ``(observation, receipt)`` so the
-    comparator can bind the command receipt identity.
+    RQ8-P1-R3-R1 Sec 9-12 + RQ8-P1-R3-R3 §11-§13: the observation runs
+    ONLY through the canonical ``run_controlled`` authority (tool/cwd/
+    risk/issuer gating from the run's own WorkContract; no independent
+    gating logic here). Failed test IDs are parsed from the authoritative
+    receipt stdout, never from agent output. The runner itself persists
+    the raw subprocess stdout/stderr bytes via ``artifact_dir`` and the
+    returned ``CommandResult`` is the authoritative artifact truth.
+    Returns ``(observation, receipt)`` so the comparator can bind the
+    command receipt identity.
     """
     cmd_str = subprocess.list2cmdline(verification_command)
+    log_dir = (
+        workspace_root
+        / ".synapx_red_observation"
+        / _sanitize_path_component(work_contract_id)
+    )
     try:
         receipt = run_controlled(
             cmd_str,
@@ -1430,6 +1442,7 @@ def _observe_red_state(
             cwd=Path(workspace_root).resolve(),
             timeout=timeout_seconds,
             capture_text=True,
+            artifact_dir=log_dir,
         )
     except ValueError as exc:
         raise RedObservationError(
@@ -1440,6 +1453,8 @@ def _observe_red_state(
             f"RED verifier could not start: {exc}"
         ) from exc
     exit_code = receipt.exit_code
+    # Derived text view (failed-test parsing): failure-kind is NEVER
+    # the authoritative receipt artifact. The raw persisted bytes are.
     failed_ids = parse_pytest_failed_test_ids(receipt.stdout_text)
     error_ids = parse_pytest_error_test_ids(receipt.stdout_text)
     failure_kind = classify_pytest_failure_kind(
@@ -1454,31 +1469,17 @@ def _observe_red_state(
             f"RED verifier command is not fingerprintable: {exc}"
         ) from exc
 
-    log_dir = (
-        workspace_root
-        / ".synapx_red_observation"
-        / _sanitize_path_component(work_contract_id)
-    )
-    try:
-        log_dir.mkdir(parents=True, exist_ok=True)
-        stdout_bytes = receipt.stdout_text.encode("utf-8")
-        stderr_bytes = receipt.stderr_text.encode("utf-8")
-        stdout_ref = (log_dir / "stdout.log").as_posix()
-        stderr_ref = (log_dir / "stderr.log").as_posix()
-        (log_dir / "stdout.log").write_bytes(stdout_bytes)
-        (log_dir / "stderr.log").write_bytes(stderr_bytes)
-    except OSError as exc:
-        raise RedObservationError(
-            f"RED observation logs could not be recorded: {exc}"
-        ) from exc
-
+    # RedObservation binds DIRECTLY to the controlled CommandResult
+    # (RQ8-P1-R3-R3 §13). No re-computation, no re-encoding, no
+    # duplicate log: stdout_ref / stdout_sha256 / stdout_size_bytes are
+    # exactly the controlled receipt's identity.
     observation_id = hashlib.sha256(
         "\x00".join(
             (
                 source_revision,
                 fingerprint,
                 str(exit_code),
-                hashlib.sha256(stdout_bytes).hexdigest(),
+                receipt.stdout_sha256,
             )
         ).encode("utf-8")
     ).hexdigest()[:32]
@@ -1490,15 +1491,15 @@ def _observe_red_state(
         exit_code=exit_code,
         failure_kind=failure_kind,
         failed_test_ids=tuple(failed_ids),
-        stdout_sha256=hashlib.sha256(stdout_bytes).hexdigest(),
-        stderr_sha256=hashlib.sha256(stderr_bytes).hexdigest(),
+        stdout_sha256=receipt.stdout_sha256,
+        stderr_sha256=receipt.stderr_sha256,
         job_id=execution_identity.job_id,
         task_id=execution_identity.task_id,
         attempt_id=execution_identity.attempt_id,
-        stdout_ref=stdout_ref,
-        stderr_ref=stderr_ref,
-        stdout_size_bytes=len(stdout_bytes),
-        stderr_size_bytes=len(stderr_bytes),
+        stdout_ref=receipt.stdout_path,
+        stderr_ref=receipt.stderr_path,
+        stdout_size_bytes=receipt.stdout_size,
+        stderr_size_bytes=receipt.stderr_size,
     )
     return observation, receipt
 
@@ -2019,6 +2020,9 @@ def run_governed_execution(
             # D3 fail-closed: no trustworthy verification command for this
             # target repo. Surface a deterministic BLOCKED with the D3
             # primary failure so the same-run receipt preserves the cause.
+            # RQ8-P1-R3-R3 §16: post-comparator _block() MUST carry
+            # the comparator evidence + observation receipt so the
+            # lineage survives the D3 short-circuit (gap 1).
             return _block(
                 request=request,
                 workspace_root=workspace_root,
@@ -2049,6 +2053,8 @@ def run_governed_execution(
                 verification_attempted=False,
                 mutation_attempted=mutation.mutation_attempted,
                 proposal_parsing_attempted=mutation.proposal_parsing_attempted,
+                red_qualification_evidence=red_evidence,
+                red_observation_receipt=red_observation_receipt,
             )
         verification = verify_workspace(
             repository_root=workspace_root,
@@ -2057,6 +2063,9 @@ def run_governed_execution(
             timeout_seconds=request.timeout_seconds,
             red_qualified=red_qualified,
         )
+        # RQ8-P1-R3-R3 §16 (gap 2/3): the post-apply zero-write
+        # verification-failure envelope MUST seal the actual controlled
+        # observation receipt under the same identity as the comparator.
         sealed = seal_execution_evidence(
             build_evidence_envelope(
                 work_contract_id=work_contract_id,
@@ -2066,6 +2075,7 @@ def run_governed_execution(
                 verification=verification,
                 source_revision=before.source_revision,
                 red_qualification=red_evidence,
+                red_observation_receipt=red_observation_receipt,
             )
         )
         decision, terminalization_input = finalize_terminal_decision(
@@ -2102,6 +2112,7 @@ def run_governed_execution(
             errors=[mutation.error or "mutation failed"]
             + list(mutation.validation_blockers),
             red_qualification_evidence=red_evidence,
+            red_observation_receipt=red_observation_receipt,
         )
         result.process_started = agent_process_started
         result.failure_class = agent_failure_class
@@ -2117,6 +2128,10 @@ def run_governed_execution(
     if verification_command is None:
         # D3 fail-closed on the positive path: never substitute the
         # SynapX control-plane venv Python as the target verifier.
+        # RQ8-P1-R3-R3 §16 (gap 4): post-comparator _block() on the
+        # positive path MUST carry the comparator evidence + actual
+        # controlled observation receipt so the D3 BLOCKED is not a
+        # silent lineage drop.
         return _block(
             request=request,
             workspace_root=workspace_root,
@@ -2147,6 +2162,8 @@ def run_governed_execution(
             verification_attempted=False,
             mutation_attempted=mutation.mutation_attempted,
             proposal_parsing_attempted=mutation.proposal_parsing_attempted,
+            red_qualification_evidence=red_evidence,
+            red_observation_receipt=red_observation_receipt,
         )
     verification = verify_workspace(
         repository_root=workspace_root,

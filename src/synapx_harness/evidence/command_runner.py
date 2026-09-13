@@ -84,11 +84,51 @@ def _hash_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _persist_artifact_bytes(
+    artifact_dir: Path,
+    stdout_data: bytes,
+    stderr_data: bytes,
+) -> tuple[str, str, str, int, str, int]:
+    """Persist raw subprocess stdout/stderr bytes to disk and return the
+    authoritative artifact identity.
+
+    RQ8-P1-R3-R3 §11-§12: when the caller passes ``artifact_dir``, the
+    runner writes the raw subprocess bytes directly to disk (no
+    decode/re-encode round trip) and re-reads the persisted file to
+    compute SHA/size. The returned values are the authoritative artifact
+    truth consumed by ``CommandResult`` and downstream observers.
+
+    Returns
+    -------
+    ``(stdout_path, stderr_path, stdout_sha256, stdout_size,
+       stderr_sha256, stderr_size)``
+    """
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    stdout_path = artifact_dir / "stdout.log"
+    stderr_path = artifact_dir / "stderr.log"
+    stdout_path.write_bytes(stdout_data)
+    stderr_path.write_bytes(stderr_data)
+    # Re-read from disk so the receipt identity matches the persisted
+    # artifact bytes exactly (defence-in-depth against any in-memory
+    # mutation between write and hash).
+    on_disk_stdout = stdout_path.read_bytes()
+    on_disk_stderr = stderr_path.read_bytes()
+    return (
+        stdout_path.as_posix(),
+        stderr_path.as_posix(),
+        _hash_bytes(on_disk_stdout),
+        len(on_disk_stdout),
+        _hash_bytes(on_disk_stderr),
+        len(on_disk_stderr),
+    )
+
+
 def run_command(
     command: str,
     cwd: Path | None = None,
     timeout: int | None = None,
     capture_text: bool = False,
+    artifact_dir: Path | None = None,
 ) -> CommandResult:
     started_at = datetime.now(UTC).isoformat()
     cwd_str = str(cwd) if cwd else str(Path.cwd())
@@ -114,12 +154,31 @@ def run_command(
             stderr_data = stderr_data.encode("utf-8")
         exit_code = -1
 
-    stdout_sha = _hash_bytes(stdout_data)
-    stderr_sha = _hash_bytes(stderr_data)
-
     gate = "PASS" if exit_code == 0 else "FAIL"
 
     cmd_id = hashlib.sha256(f"{cwd_str}:{command}".encode()).hexdigest()[:16]
+
+    if artifact_dir is not None:
+        (
+            stdout_path,
+            stderr_path,
+            stdout_sha,
+            stdout_size,
+            stderr_sha,
+            stderr_size,
+        ) = _persist_artifact_bytes(
+            Path(artifact_dir), stdout_data, stderr_data
+        )
+    else:
+        # Legacy placeholder path: no on-disk artifact, no persisted
+        # bytes. Caller (or downstream observation stage) is responsible
+        # for any artifact persistence if needed.
+        stdout_sha = _hash_bytes(stdout_data)
+        stderr_sha = _hash_bytes(stderr_data)
+        stdout_size = len(stdout_data)
+        stderr_size = len(stderr_data)
+        stdout_path = f"/tmp/command_{cmd_id}_stdout"
+        stderr_path = f"/tmp/command_{cmd_id}_stderr"
 
     return CommandResult(
         command_id=cmd_id,
@@ -128,12 +187,12 @@ def run_command(
         started_at=started_at,
         finished_at=finished_at,
         exit_code=exit_code,
-        stdout_path=f"/tmp/command_{cmd_id}_stdout",
-        stderr_path=f"/tmp/command_{cmd_id}_stderr",
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
         stdout_sha256=stdout_sha,
         stderr_sha256=stderr_sha,
-        stdout_size=len(stdout_data),
-        stderr_size=len(stderr_data),
+        stdout_size=stdout_size,
+        stderr_size=stderr_size,
         gate=gate,
         stdout_text=(
             stdout_data.decode("utf-8", "replace") if capture_text else ""
@@ -362,6 +421,7 @@ def run_controlled(
     cwd: Path | None = None,
     timeout: int | None = None,
     capture_text: bool = False,
+    artifact_dir: Path | None = None,
 ) -> CommandResult:
     """Execute a command under WorkContract authority (T07).
 
@@ -373,11 +433,13 @@ def run_controlled(
         The authoritative WorkContract payload (dict or WorkContract
         instance). When provided as a Pydantic model it is converted to
         JSON via ``model_dump(mode='json')``.
-    cwd, timeout:
-        Forwarded to :func:`run_command`.
-    capture_text:
-        Forwarded to :func:`run_command`. When True the decoded streams
-        are attached to the receipt (never part of ``to_dict()``).
+    cwd, timeout, capture_text, artifact_dir:
+        Forwarded to :func:`run_command`. ``artifact_dir`` (RQ8-P1-R3-R3
+        §11) optionally persists the raw subprocess stdout/stderr bytes
+        to ``<artifact_dir>/stdout.log`` and ``<artifact_dir>/stderr.log``
+        and exposes their authoritative identity through the returned
+        ``CommandResult``. When ``artifact_dir`` is ``None`` the legacy
+        placeholder path shape is preserved (no on-disk artifact).
 
     Raises
     ------
@@ -439,8 +501,13 @@ def run_controlled(
                 f"{allowed_paths} (scope|path) {cwd_str!r}"
             )
 
-    return run_command(command, cwd=cwd, timeout=timeout,
-                       capture_text=capture_text)
+    return run_command(
+        command,
+        cwd=cwd,
+        timeout=timeout,
+        capture_text=capture_text,
+        artifact_dir=artifact_dir,
+    )
 
 
 __all__ = [
