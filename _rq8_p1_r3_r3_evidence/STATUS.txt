@@ -1,0 +1,10 @@
+SYNAPX-HARNESS RQ8-P1-R3-R3 — Code-Repair Review
+STATUS: R3_R3_CODE_REPAIR_COMPLETE_SEED_CUSTODY_BLOCKED
+HEAD: 801c2989d3afc53313529fb118bd8321d9698f38
+R3-R3 code repair commit: 31c28d69e39a8a7c54423f08ad9e0f71e0932bb4
+
+This is NOT the official R3-R3 Owner Review package. The official package
+is BLOCKED per R3-R3 §20 because C:\rq8\seeds\RQ8_ITS_DANGEROUS_COMPRESSED_PAYLOAD_SEED.patch
+is not present on this PC and §19 prohibits generating new patch bytes.
+
+See REVIEW_README.md for full context.

@@ -1,0 +1,1340 @@
+diff --git a/src/synapx_harness/evidence/command_runner.py b/src/synapx_harness/evidence/command_runner.py
+index 968662a..3360ea1 100644
+--- a/src/synapx_harness/evidence/command_runner.py
++++ b/src/synapx_harness/evidence/command_runner.py
+@@ -84,11 +84,51 @@ def _hash_bytes(data: bytes) -> str:
+     return hashlib.sha256(data).hexdigest()
+ 
+ 
++def _persist_artifact_bytes(
++    artifact_dir: Path,
++    stdout_data: bytes,
++    stderr_data: bytes,
++) -> tuple[str, str, str, int, str, int]:
++    """Persist raw subprocess stdout/stderr bytes to disk and return the
++    authoritative artifact identity.
++
++    RQ8-P1-R3-R3 §11-§12: when the caller passes ``artifact_dir``, the
++    runner writes the raw subprocess bytes directly to disk (no
++    decode/re-encode round trip) and re-reads the persisted file to
++    compute SHA/size. The returned values are the authoritative artifact
++    truth consumed by ``CommandResult`` and downstream observers.
++
++    Returns
++    -------
++    ``(stdout_path, stderr_path, stdout_sha256, stdout_size,
++       stderr_sha256, stderr_size)``
++    """
++    artifact_dir.mkdir(parents=True, exist_ok=True)
++    stdout_path = artifact_dir / "stdout.log"
++    stderr_path = artifact_dir / "stderr.log"
++    stdout_path.write_bytes(stdout_data)
++    stderr_path.write_bytes(stderr_data)
++    # Re-read from disk so the receipt identity matches the persisted
++    # artifact bytes exactly (defence-in-depth against any in-memory
++    # mutation between write and hash).
++    on_disk_stdout = stdout_path.read_bytes()
++    on_disk_stderr = stderr_path.read_bytes()
++    return (
++        stdout_path.as_posix(),
++        stderr_path.as_posix(),
++        _hash_bytes(on_disk_stdout),
++        len(on_disk_stdout),
++        _hash_bytes(on_disk_stderr),
++        len(on_disk_stderr),
++    )
++
++
+ def run_command(
+     command: str,
+     cwd: Path | None = None,
+     timeout: int | None = None,
+     capture_text: bool = False,
++    artifact_dir: Path | None = None,
+ ) -> CommandResult:
+     started_at = datetime.now(UTC).isoformat()
+     cwd_str = str(cwd) if cwd else str(Path.cwd())
+@@ -114,13 +154,32 @@ def run_command(
+             stderr_data = stderr_data.encode("utf-8")
+         exit_code = -1
+ 
+-    stdout_sha = _hash_bytes(stdout_data)
+-    stderr_sha = _hash_bytes(stderr_data)
+-
+     gate = "PASS" if exit_code == 0 else "FAIL"
+ 
+     cmd_id = hashlib.sha256(f"{cwd_str}:{command}".encode()).hexdigest()[:16]
+ 
++    if artifact_dir is not None:
++        (
++            stdout_path,
++            stderr_path,
++            stdout_sha,
++            stdout_size,
++            stderr_sha,
++            stderr_size,
++        ) = _persist_artifact_bytes(
++            Path(artifact_dir), stdout_data, stderr_data
++        )
++    else:
++        # Legacy placeholder path: no on-disk artifact, no persisted
++        # bytes. Caller (or downstream observation stage) is responsible
++        # for any artifact persistence if needed.
++        stdout_sha = _hash_bytes(stdout_data)
++        stderr_sha = _hash_bytes(stderr_data)
++        stdout_size = len(stdout_data)
++        stderr_size = len(stderr_data)
++        stdout_path = f"/tmp/command_{cmd_id}_stdout"
++        stderr_path = f"/tmp/command_{cmd_id}_stderr"
++
+     return CommandResult(
+         command_id=cmd_id,
+         sanitized_command=command,
+@@ -128,12 +187,12 @@ def run_command(
+         started_at=started_at,
+         finished_at=finished_at,
+         exit_code=exit_code,
+-        stdout_path=f"/tmp/command_{cmd_id}_stdout",
+-        stderr_path=f"/tmp/command_{cmd_id}_stderr",
++        stdout_path=stdout_path,
++        stderr_path=stderr_path,
+         stdout_sha256=stdout_sha,
+         stderr_sha256=stderr_sha,
+-        stdout_size=len(stdout_data),
+-        stderr_size=len(stderr_data),
++        stdout_size=stdout_size,
++        stderr_size=stderr_size,
+         gate=gate,
+         stdout_text=(
+             stdout_data.decode("utf-8", "replace") if capture_text else ""
+@@ -362,6 +421,7 @@ def run_controlled(
+     cwd: Path | None = None,
+     timeout: int | None = None,
+     capture_text: bool = False,
++    artifact_dir: Path | None = None,
+ ) -> CommandResult:
+     """Execute a command under WorkContract authority (T07).
+ 
+@@ -373,11 +433,13 @@ def run_controlled(
+         The authoritative WorkContract payload (dict or WorkContract
+         instance). When provided as a Pydantic model it is converted to
+         JSON via ``model_dump(mode='json')``.
+-    cwd, timeout:
+-        Forwarded to :func:`run_command`.
+-    capture_text:
+-        Forwarded to :func:`run_command`. When True the decoded streams
+-        are attached to the receipt (never part of ``to_dict()``).
++    cwd, timeout, capture_text, artifact_dir:
++        Forwarded to :func:`run_command`. ``artifact_dir`` (RQ8-P1-R3-R3
++        §11) optionally persists the raw subprocess stdout/stderr bytes
++        to ``<artifact_dir>/stdout.log`` and ``<artifact_dir>/stderr.log``
++        and exposes their authoritative identity through the returned
++        ``CommandResult``. When ``artifact_dir`` is ``None`` the legacy
++        placeholder path shape is preserved (no on-disk artifact).
+ 
+     Raises
+     ------
+@@ -439,8 +501,13 @@ def run_controlled(
+                 f"{allowed_paths} (scope|path) {cwd_str!r}"
+             )
+ 
+-    return run_command(command, cwd=cwd, timeout=timeout,
+-                       capture_text=capture_text)
++    return run_command(
++        command,
++        cwd=cwd,
++        timeout=timeout,
++        capture_text=capture_text,
++        artifact_dir=artifact_dir,
++    )
+ 
+ 
+ __all__ = [
+diff --git a/src/synapx_harness/kernel/governed_execution.py b/src/synapx_harness/kernel/governed_execution.py
+index 4913123..f939a99 100644
+--- a/src/synapx_harness/kernel/governed_execution.py
++++ b/src/synapx_harness/kernel/governed_execution.py
+@@ -52,54 +52,55 @@ import json
+ import os
+ import subprocess
+ import uuid
++from collections.abc import Callable
+ from dataclasses import dataclass, field
+ from pathlib import Path
+-from typing import Any, Callable
++from typing import Any
+ 
+ from synapx_harness.adapters.codex.contract import CodexAdapter
+ from synapx_harness.adapters.codex.models import (
+     AGENT_RUNTIME_SCHEMA_VERSION,
++    DEFAULT_MAX_OUTPUT_BYTES,
+     AgentContext,
+     AgentExecutionContext,
+     AgentInvocation,
+     AgentLimits,
+     AgentRequest,
+-    AgentResult,
+     AgentTask,
+     AgentWorkspace,
+-    DEFAULT_MAX_OUTPUT_BYTES,
+ )
+ from synapx_harness.adapters.codex.runtime import SubprocessCodexRuntime
++from synapx_harness.context.models import (
++    CONTEXT_CONTRACT_TYPE,
++    CONTEXT_SCHEMA_VERSION,
++    SharedUnderstandingContext,
++)
++from synapx_harness.context.scanner import DeterministicRepositoryScanner
+ from synapx_harness.contracts.runtime_models import (
+     ExecutionIdentity,
+     RedExpectationBinding,
+-    SourceRevisionRef,
+     VerificationResult,
+     WorkContract,
+     build_source_revision_ref,
+-    build_verification_result as _build_verification_result,
+ )
+-from synapx_harness.context.models import (
+-    CONTEXT_CONTRACT_TYPE,
+-    CONTEXT_SCHEMA_VERSION,
+-    SharedUnderstandingContext,
++from synapx_harness.contracts.runtime_models import (
++    build_verification_result as _build_verification_result,
+ )
+-from synapx_harness.context.scanner import DeterministicRepositoryScanner
+ from synapx_harness.evidence.command_runner import (
+     CommandResult,
+     normalize_write_token_path,
+     run_command,
+     run_controlled,
+ )
++from synapx_harness.evidence.evidence_validator import (
++    CORE_EVIDENCE_SEALER,
++    seal_evidence,
++)
+ from synapx_harness.evidence.pytest_result_parser import (
+     classify_pytest_failure_kind,
+     parse_pytest_error_test_ids,
+     parse_pytest_failed_test_ids,
+ )
+-from synapx_harness.evidence.evidence_validator import (
+-    CORE_EVIDENCE_SEALER,
+-    seal_evidence,
+-)
+ from synapx_harness.kernel.mutation_authority import (
+     AdmissionReceipt,
+     ApplyReceipt,
+@@ -128,7 +129,6 @@ from synapx_harness.kernel.red_qualification import (
+     verify_workcontract_expectation_binding,
+ )
+ from synapx_harness.kernel.terminal_finalizer import (
+-    TERMINAL_FINALIZER_ISSUER,
+     TerminalDecision,
+     finalize_from_sealed_evidence,
+ )
+@@ -136,9 +136,11 @@ from synapx_harness.kernel.work_contract_builder import (
+     CANONICAL_SCHEMA_VERSION,
+     FIRST_SLICE_ADMISSIBLE_TASK_TYPES,
+     HARNESS_CORE_ADMISSION,
+-    build as build_work_contract_fn,
+     make_default_admission_receipt,
+ )
++from synapx_harness.kernel.work_contract_builder import (
++    build as build_work_contract_fn,
++)
+ 
+ # ---------------------------------------------------------------------------
+ # Public composition seams (re-used by tests + the public CLI bridge).
+@@ -946,14 +948,16 @@ def _receipt_to_json_dict(
+     receipt: CommandResult,
+     observation: RedObservation,
+ ) -> dict[str, object]:
+-    """Project ONE actual controlled receipt (RQ8-P1-R3-R2 Sec 8).
+-
+-    No re-run, no recomputation, no synthetic receipt: the command
+-    identity comes from the receipt that produced the observation, and
+-    the artifact hashes/sizes come from the observation's persisted
+-    files (whose bytes the observer hashed at write time). The
+-    file-byte hashes are authoritative for the sealed refs; the receipt
+-    also carries the raw-run hashes in-process.
++    """Project ONE actual controlled receipt (RQ8-P1-R3-R2 Sec 8,
++    RQ8-P1-R3-R3 §13/§14).
++
++    RQ8-P1-R3-R3 §13: the sealed ``red_observation_receipt`` is a
++    bounded projection of the actual controlled ``CommandResult`` --
++    stdout ref / sha / size come DIRECTLY from the receipt's
++    authoritative artifact identity. The observation is kept only for
++    ``command_receipt_id`` parity with the qualification evidence;
++    observation fields are NEVER used as authoritative receipt
++    references.
+     """
+     return {
+         "command_id": receipt.command_id,
+@@ -961,14 +965,14 @@ def _receipt_to_json_dict(
+         "working_directory": receipt.working_directory,
+         "exit_code": receipt.exit_code,
+         "stdout_artifact": {
+-            "ref": observation.stdout_ref,
+-            "sha256": observation.stdout_sha256,
+-            "size_bytes": observation.stdout_size_bytes,
++            "ref": receipt.stdout_path,
++            "sha256": receipt.stdout_sha256,
++            "size_bytes": receipt.stdout_size,
+         },
+         "stderr_artifact": {
+-            "ref": observation.stderr_ref,
+-            "sha256": observation.stderr_sha256,
+-            "size_bytes": observation.stderr_size_bytes,
++            "ref": receipt.stderr_path,
++            "sha256": receipt.stderr_sha256,
++            "size_bytes": receipt.stderr_size,
+         },
+         "gate": receipt.gate,
+     }
+@@ -1415,14 +1419,22 @@ def _observe_red_state(
+ ) -> tuple[RedObservation, CommandResult]:
+     """Execute the authoritative verifier under WorkContract control.
+ 
+-    RQ8-P1-R3-R1 Sec 9-12: the observation runs ONLY through the
+-    canonical ``run_controlled`` authority (tool/cwd/risk/issuer gating
+-    from the run's own WorkContract; no independent gating logic here).
+-    Failed test IDs are parsed from the authoritative receipt stdout,
+-    never from agent output. Returns ``(observation, receipt)`` so the
+-    comparator can bind the command receipt identity.
++    RQ8-P1-R3-R1 Sec 9-12 + RQ8-P1-R3-R3 §11-§13: the observation runs
++    ONLY through the canonical ``run_controlled`` authority (tool/cwd/
++    risk/issuer gating from the run's own WorkContract; no independent
++    gating logic here). Failed test IDs are parsed from the authoritative
++    receipt stdout, never from agent output. The runner itself persists
++    the raw subprocess stdout/stderr bytes via ``artifact_dir`` and the
++    returned ``CommandResult`` is the authoritative artifact truth.
++    Returns ``(observation, receipt)`` so the comparator can bind the
++    command receipt identity.
+     """
+     cmd_str = subprocess.list2cmdline(verification_command)
++    log_dir = (
++        workspace_root
++        / ".synapx_red_observation"
++        / _sanitize_path_component(work_contract_id)
++    )
+     try:
+         receipt = run_controlled(
+             cmd_str,
+@@ -1430,6 +1442,7 @@ def _observe_red_state(
+             cwd=Path(workspace_root).resolve(),
+             timeout=timeout_seconds,
+             capture_text=True,
++            artifact_dir=log_dir,
+         )
+     except ValueError as exc:
+         raise RedObservationError(
+@@ -1440,6 +1453,8 @@ def _observe_red_state(
+             f"RED verifier could not start: {exc}"
+         ) from exc
+     exit_code = receipt.exit_code
++    # Derived text view (failed-test parsing): failure-kind is NEVER
++    # the authoritative receipt artifact. The raw persisted bytes are.
+     failed_ids = parse_pytest_failed_test_ids(receipt.stdout_text)
+     error_ids = parse_pytest_error_test_ids(receipt.stdout_text)
+     failure_kind = classify_pytest_failure_kind(
+@@ -1454,31 +1469,17 @@ def _observe_red_state(
+             f"RED verifier command is not fingerprintable: {exc}"
+         ) from exc
+ 
+-    log_dir = (
+-        workspace_root
+-        / ".synapx_red_observation"
+-        / _sanitize_path_component(work_contract_id)
+-    )
+-    try:
+-        log_dir.mkdir(parents=True, exist_ok=True)
+-        stdout_bytes = receipt.stdout_text.encode("utf-8")
+-        stderr_bytes = receipt.stderr_text.encode("utf-8")
+-        stdout_ref = (log_dir / "stdout.log").as_posix()
+-        stderr_ref = (log_dir / "stderr.log").as_posix()
+-        (log_dir / "stdout.log").write_bytes(stdout_bytes)
+-        (log_dir / "stderr.log").write_bytes(stderr_bytes)
+-    except OSError as exc:
+-        raise RedObservationError(
+-            f"RED observation logs could not be recorded: {exc}"
+-        ) from exc
+-
++    # RedObservation binds DIRECTLY to the controlled CommandResult
++    # (RQ8-P1-R3-R3 §13). No re-computation, no re-encoding, no
++    # duplicate log: stdout_ref / stdout_sha256 / stdout_size_bytes are
++    # exactly the controlled receipt's identity.
+     observation_id = hashlib.sha256(
+         "\x00".join(
+             (
+                 source_revision,
+                 fingerprint,
+                 str(exit_code),
+-                hashlib.sha256(stdout_bytes).hexdigest(),
++                receipt.stdout_sha256,
+             )
+         ).encode("utf-8")
+     ).hexdigest()[:32]
+@@ -1490,15 +1491,15 @@ def _observe_red_state(
+         exit_code=exit_code,
+         failure_kind=failure_kind,
+         failed_test_ids=tuple(failed_ids),
+-        stdout_sha256=hashlib.sha256(stdout_bytes).hexdigest(),
+-        stderr_sha256=hashlib.sha256(stderr_bytes).hexdigest(),
++        stdout_sha256=receipt.stdout_sha256,
++        stderr_sha256=receipt.stderr_sha256,
+         job_id=execution_identity.job_id,
+         task_id=execution_identity.task_id,
+         attempt_id=execution_identity.attempt_id,
+-        stdout_ref=stdout_ref,
+-        stderr_ref=stderr_ref,
+-        stdout_size_bytes=len(stdout_bytes),
+-        stderr_size_bytes=len(stderr_bytes),
++        stdout_ref=receipt.stdout_path,
++        stderr_ref=receipt.stderr_path,
++        stdout_size_bytes=receipt.stdout_size,
++        stderr_size_bytes=receipt.stderr_size,
+     )
+     return observation, receipt
+ 
+@@ -2019,6 +2020,9 @@ def run_governed_execution(
+             # D3 fail-closed: no trustworthy verification command for this
+             # target repo. Surface a deterministic BLOCKED with the D3
+             # primary failure so the same-run receipt preserves the cause.
++            # RQ8-P1-R3-R3 §16: post-comparator _block() MUST carry
++            # the comparator evidence + observation receipt so the
++            # lineage survives the D3 short-circuit (gap 1).
+             return _block(
+                 request=request,
+                 workspace_root=workspace_root,
+@@ -2049,6 +2053,8 @@ def run_governed_execution(
+                 verification_attempted=False,
+                 mutation_attempted=mutation.mutation_attempted,
+                 proposal_parsing_attempted=mutation.proposal_parsing_attempted,
++                red_qualification_evidence=red_evidence,
++                red_observation_receipt=red_observation_receipt,
+             )
+         verification = verify_workspace(
+             repository_root=workspace_root,
+@@ -2057,6 +2063,9 @@ def run_governed_execution(
+             timeout_seconds=request.timeout_seconds,
+             red_qualified=red_qualified,
+         )
++        # RQ8-P1-R3-R3 §16 (gap 2/3): the post-apply zero-write
++        # verification-failure envelope MUST seal the actual controlled
++        # observation receipt under the same identity as the comparator.
+         sealed = seal_execution_evidence(
+             build_evidence_envelope(
+                 work_contract_id=work_contract_id,
+@@ -2066,6 +2075,7 @@ def run_governed_execution(
+                 verification=verification,
+                 source_revision=before.source_revision,
+                 red_qualification=red_evidence,
++                red_observation_receipt=red_observation_receipt,
+             )
+         )
+         decision, terminalization_input = finalize_terminal_decision(
+@@ -2102,6 +2112,7 @@ def run_governed_execution(
+             errors=[mutation.error or "mutation failed"]
+             + list(mutation.validation_blockers),
+             red_qualification_evidence=red_evidence,
++            red_observation_receipt=red_observation_receipt,
+         )
+         result.process_started = agent_process_started
+         result.failure_class = agent_failure_class
+@@ -2117,6 +2128,10 @@ def run_governed_execution(
+     if verification_command is None:
+         # D3 fail-closed on the positive path: never substitute the
+         # SynapX control-plane venv Python as the target verifier.
++        # RQ8-P1-R3-R3 §16 (gap 4): post-comparator _block() on the
++        # positive path MUST carry the comparator evidence + actual
++        # controlled observation receipt so the D3 BLOCKED is not a
++        # silent lineage drop.
+         return _block(
+             request=request,
+             workspace_root=workspace_root,
+@@ -2147,6 +2162,8 @@ def run_governed_execution(
+             verification_attempted=False,
+             mutation_attempted=mutation.mutation_attempted,
+             proposal_parsing_attempted=mutation.proposal_parsing_attempted,
++            red_qualification_evidence=red_evidence,
++            red_observation_receipt=red_observation_receipt,
+         )
+     verification = verify_workspace(
+         repository_root=workspace_root,
+diff --git a/tests/contract/test_rq8_p1_r3_r3_controlled_raw_receipt.py b/tests/contract/test_rq8_p1_r3_r3_controlled_raw_receipt.py
+new file mode 100644
+index 0000000..fad543f
+--- /dev/null
++++ b/tests/contract/test_rq8_p1_r3_r3_controlled_raw_receipt.py
+@@ -0,0 +1,399 @@
++"""RQ8-P1-R3-R3 Phase B pre-repair RED tests -- raw CommandResult receipt truth.
++
++These tests pin RQ8-P1-R3-R3 §B. The sealed ``red_observation_receipt`` MUST
++be a bounded projection of the actual controlled ``CommandResult`` -- not a
++hybrid of CommandResult identity plus decode/re-encode observation
++metadata.
++
++Pre-repair (HEAD 95431b37), tests FAIL because:
++
++  * ``CommandResult.stdout_path`` is a placeholder (``/tmp/command_...``) and
++    is NOT the actual persisted file. The runner never writes the raw
++    subprocess bytes anywhere.
++  * ``_observe_red_state`` round-trips the raw bytes through
++    ``stdout_text.encode("utf-8")`` (``decode("utf-8", "replace")`` then
++    re-encode) before writing to the artifact directory. Bytes that were
++    invalid UTF-8 in the subprocess output are corrupted in the persisted
++    file.
++  * ``_receipt_to_json_dict`` projects ``observation.stdout_ref`` /
++    ``observation.stdout_sha256`` / ``observation.stdout_size_bytes`` --
++    none of which come from the controlled ``CommandResult`` that produced
++    the observation.
++
++Post-repair, every test PASSES because:
++
++  * ``run_controlled`` accepts a bounded ``artifact_dir: Path | None`` kwarg.
++    When provided, the runner persists the raw subprocess bytes to
++    ``<artifact_dir>/stdout.log`` and ``<artifact_dir>/stderr.log`` and
++    computes the receipt's path/sha/size from the persisted file. The
++    receipt is the authoritative artifact truth.
++  * ``RedObservation`` binds ``stdout_ref``/``stdout_sha256``/
++    ``stdout_size_bytes`` (and stderr counterparts) directly from the
++    controlled receipt -- no re-computation, no re-encoding.
++  * ``_receipt_to_json_dict`` projects the bounded identity fields from
++    the controlled receipt; the sealed envelope shares the same identity.
++"""
++from __future__ import annotations
++
++import hashlib
++import json
++import sys
++import textwrap
++from pathlib import Path
++
++from synapx_harness.evidence.command_runner import (
++    CommandResult,
++    run_controlled,
++)
++from synapx_harness.kernel.governed_execution import (
++    GovernedExecutionRequest,
++    _fixture_root_sha,
++    run_governed_execution,
++)
++from synapx_harness.kernel.mutation_proposal_contract import (
++    PROPOSAL_BEGIN,
++    PROPOSAL_END,
++)
++
++CALC_BROKEN = "def add(a, b):\n    return a + b\n"
++
++CALC_FIXED = (
++    "def add(a, b):\n"
++    "    return a + b\n"
++    "\n"
++    "\n"
++    "def subtract(a, b):\n"
++    "    return a - b\n"
++)
++
++CALC_TEST = textwrap.dedent(
++    """\
++    import calculator
++
++
++    def test_add():
++        assert calculator.add(2, 3) == 5
++
++
++    def test_subtract():
++        assert calculator.subtract(5, 3) == 2
++    """
++)
++
++CALC_TASK = (
++    "Fix the subtract regression.\n"
++    "\n"
++    "Allowed write paths:\n"
++    "- calculator.py\n"
++    "\n"
++    "Do not modify unrelated files.\n"
++    "Run the repository's authoritative tests and only complete "
++    "if verification passes.\n"
++)
++
++CALC_FAILED_IDS = ["tests/test_calculator.py::test_subtract"]
++VERIFICATION_COMMAND = [sys.executable, "-m", "pytest", "-q"]
++EXPECTATION_FILENAME = ".synapx_red_expectation.json"
++
++
++def _fp(command: list[str]) -> str:
++    return hashlib.sha256(
++        json.dumps(command, separators=(",", ":"), ensure_ascii=True).encode(
++            "utf-8"
++        )
++    ).hexdigest()
++
++
++def _write_calc_repo(root: Path, *, broken: bool) -> Path:
++    root.mkdir(parents=True, exist_ok=True)
++    (root / "calculator.py").write_text(
++        CALC_BROKEN if broken else CALC_FIXED, encoding="utf-8"
++    )
++    tests_dir = root / "tests"
++    tests_dir.mkdir(exist_ok=True)
++    (tests_dir / "__init__.py").write_text("", encoding="utf-8")
++    (tests_dir / "test_calculator.py").write_text(CALC_TEST, encoding="utf-8")
++    return root
++
++
++def _stage_expectation(
++    repo: Path,
++    *,
++    revision: str | None = None,
++    fingerprint: str | None = None,
++    failed_ids: list[str] | None = None,
++) -> Path:
++    path = repo / EXPECTATION_FILENAME
++    payload: dict[str, object] = {
++        "expectation_id": "test/r3r3/expectation/v1",
++        "expectation_version": 1,
++        "status": "QUALIFIED",
++        "source_type": "BENCHMARK_FIXTURE",
++        "source_revision": (
++            revision if revision is not None else _fixture_root_sha(repo)
++        ),
++        "verification_command_fingerprint": fingerprint or "",
++        "expected_exit_code": 1,
++        "match_rule": "EXACT_FAILED_TEST_IDS",
++        "required_failed_test_ids": (
++            list(CALC_FAILED_IDS) if failed_ids is None else list(failed_ids)
++        ),
++        "provenance": {"source_ref": "test", "source_sha256": "a" * 64},
++    }
++    path.write_text(json.dumps(payload), encoding="utf-8")
++    return path
++
++
++def _proposal(old: str, new: str, path: str = "calculator.py") -> str:
++    return (
++        f"{PROPOSAL_BEGIN}\n"
++        f"FILE: {path}\n"
++        f"<<<< OLD\n"
++        f"{old}\n"
++        f">>>> OLD\n"
++        f"<<<< NEW\n"
++        f"{new}\n"
++        f">>>> NEW\n"
++        f"{PROPOSAL_END}\n"
++    )
++
++
++def _run(repo: Path, *, proposal: str):
++    return run_governed_execution(
++        GovernedExecutionRequest(
++            workspace_root=repo,
++            task=CALC_TASK,
++            verification_command=list(VERIFICATION_COMMAND),
++            codex_stdout_override=proposal,
++        )
++    )
++
++
++# ---------------------------------------------------------------------------
++# B1 -- run_controlled bounded artifact_dir extension
++# ---------------------------------------------------------------------------
++
++
++class TestRunControlledArtifactDir:
++    def test_artifact_dir_persists_raw_subprocess_bytes(
++        self, tmp_path: Path
++    ) -> None:
++        """When ``artifact_dir`` is provided, ``run_controlled`` MUST
++        persist the raw subprocess stdout/stderr bytes to
++        ``<artifact_dir>/stdout.log`` and ``<artifact_dir>/stderr.log``.
++        The disk files MUST contain the bytes the subprocess emitted,
++        not a decode/re-encode-of-text round trip."""
++        artifact_dir = tmp_path / "artifacts"
++        artifact_dir.mkdir()
++        # The WorkContract scope must include the actual executable token
++        # so the controlled-runner tool gate accepts it. The first token
++        # of the shell command is the python executable's full path; we
++        # pass it verbatim so the case-sensitive string comparison in
++        # ``_extract_scope_tools`` matches ``command.strip().split()[0]``.
++        python_token = sys.executable
++        wc = {
++            "work_contract_id": "wc-art",
++            "risk_class": "R0",
++            "issuer": "HARNESS_CORE_ADMISSION",
++            "scope": [
++                "phase:public_governed",
++                f"tool:{python_token}",
++                f"path:{tmp_path.as_posix()}",
++            ],
++        }
++        # ``python -c`` writes 5 valid bytes (b'hello') then a single
++        # invalid UTF-8 sequence (0xFF 0xFE). The decode/re-encode round
++        # trip replaces 0xFF 0xFE with U+FFFD (3 bytes) and corrupts the
++        # artifact.
++        cmd = (
++            f"{sys.executable} -c "
++            "\"import sys; sys.stdout.buffer.write(b'hello\\xff\\xfe\\n'); "
++            "sys.stderr.buffer.write(b'err\\xff\\xff\\n')\""
++        )
++        receipt: CommandResult = run_controlled(
++            cmd,
++            wc,
++            cwd=tmp_path,
++            timeout=30,
++            artifact_dir=artifact_dir,
++        )
++
++        # Receipt identity MUST point to the persisted files.
++        expected_stdout_path = (artifact_dir / "stdout.log").as_posix()
++        expected_stderr_path = (artifact_dir / "stderr.log").as_posix()
++        assert receipt.stdout_path == expected_stdout_path, (
++            "B1: receipt.stdout_path must equal the persisted artifact path"
++        )
++        assert receipt.stderr_path == expected_stderr_path, (
++            "B1: receipt.stderr_path must equal the persisted artifact path"
++        )
++        assert (artifact_dir / "stdout.log").is_file()
++        assert (artifact_dir / "stderr.log").is_file()
++
++        # Persisted bytes MUST equal the raw subprocess output (not a
++        # decode/re-encode round trip).
++        expected_stdout = b"hello\xff\xfe\n"
++        expected_stderr = b"err\xff\xff\n"
++        assert (artifact_dir / "stdout.log").read_bytes() == expected_stdout, (
++            "B1: persisted stdout is not the raw subprocess bytes "
++            "(decode/re-encode round trip detected)"
++        )
++        assert (artifact_dir / "stderr.log").read_bytes() == expected_stderr, (
++            "B1: persisted stderr is not the raw subprocess bytes "
++            "(decode/re-encode round trip detected)"
++        )
++
++        # Receipt SHA / size MUST equal the persisted file (not a
++        # round-trip recomputation).
++        assert receipt.stdout_sha256 == hashlib.sha256(expected_stdout).hexdigest()
++        assert receipt.stdout_size == len(expected_stdout)
++        assert receipt.stderr_sha256 == hashlib.sha256(expected_stderr).hexdigest()
++        assert receipt.stderr_size == len(expected_stderr)
++
++    def test_artifact_dir_omitted_keeps_legacy_path_shape(
++        self, tmp_path: Path
++    ) -> None:
++        """When ``artifact_dir`` is None, the receipt shape is unchanged
++        (legacy ``/tmp/command_...`` placeholder path). No artifact
++        directory is created."""
++        python_token = sys.executable
++        wc = {
++            "work_contract_id": "wc-legacy",
++            "risk_class": "R0",
++            "issuer": "HARNESS_CORE_ADMISSION",
++            "scope": [
++                "phase:public_governed",
++                f"tool:{python_token}",
++                f"path:{tmp_path.as_posix()}",
++            ],
++        }
++        cmd = f"{sys.executable} -c \"import sys; sys.stdout.write('hi')\""
++        receipt = run_controlled(
++            cmd, wc, cwd=tmp_path, timeout=30, artifact_dir=None
++        )
++        assert receipt.stdout_path.startswith("/tmp/command_"), (
++            "B1: omitting artifact_dir must keep the legacy placeholder path"
++        )
++
++    def test_artifact_dir_recomputes_sha_from_disk(
++        self, tmp_path: Path
++    ) -> None:
++        """The receipt's stdout_sha256 / stderr_sha256 / size fields MUST
++        be derived from the persisted file (authoritative artifact),
++        not from an in-memory ``stdout_data`` that may be discarded."""
++        artifact_dir = tmp_path / "artifacts2"
++        artifact_dir.mkdir()
++        python_token = sys.executable
++        wc = {
++            "work_contract_id": "wc-sha",
++            "risk_class": "R0",
++            "issuer": "HARNESS_CORE_ADMISSION",
++            "scope": [
++                "phase:public_governed",
++                f"tool:{python_token}",
++                f"path:{tmp_path.as_posix()}",
++            ],
++        }
++        cmd = f"{sys.executable} -c \"import sys; sys.stdout.write('12345')\""
++        receipt = run_controlled(
++            cmd, wc, cwd=tmp_path, timeout=30, artifact_dir=artifact_dir
++        )
++        on_disk = (artifact_dir / "stdout.log").read_bytes()
++        assert receipt.stdout_sha256 == hashlib.sha256(on_disk).hexdigest()
++        assert receipt.stdout_size == len(on_disk)
++
++
++# ---------------------------------------------------------------------------
++# B2 -- RedObservation binding is the controlled CommandResult, not a copy
++# ---------------------------------------------------------------------------
++
++
++class TestRedObservationBoundToControlledReceipt:
++    def test_observation_refs_equal_receipt_refs(
++        self, tmp_path: Path
++    ) -> None:
++        """RedObservation.stdout_ref / stderr_ref MUST equal the actual
++        controlled receipt.stdout_path / receipt.stderr_path (one
++        identity). RedObservation.stdout_sha256 / stderr_sha256 /
++        stdout_size_bytes / stderr_size_bytes MUST equal the receipt
++        fields directly -- no re-hash, no re-computation."""
++        repo = _write_calc_repo(tmp_path / "obs", broken=True)
++        _stage_expectation(repo, fingerprint=_fp(VERIFICATION_COMMAND))
++        result = _run(repo, proposal=_proposal(CALC_BROKEN, CALC_FIXED))
++
++        # We can only inspect the receipt via the sealed envelope projection.
++        sealed_recv = result.sealed_evidence.get("red_observation_receipt")
++        assert isinstance(sealed_recv, dict)
++        stdout_art = sealed_recv.get("stdout_artifact")
++        stderr_art = sealed_recv.get("stderr_artifact")
++        assert isinstance(stdout_art, dict)
++        assert isinstance(stderr_art, dict)
++
++        # The sealed stdout ref must be a real on-disk path with content.
++        stdout_ref = stdout_art.get("ref")
++        stderr_ref = stderr_art.get("ref")
++        assert isinstance(stdout_ref, str) and stdout_ref
++        assert isinstance(stderr_ref, str) and stderr_ref
++        assert Path(stdout_ref).is_file()
++        assert Path(stderr_ref).is_file()
++
++        # SHA + size in the sealed envelope MUST equal the persisted file.
++        stdout_bytes = Path(stdout_ref).read_bytes()
++        stderr_bytes = Path(stderr_ref).read_bytes()
++        assert stdout_art.get("sha256") == hashlib.sha256(stdout_bytes).hexdigest()
++        assert stdout_art.get("size_bytes") == len(stdout_bytes)
++        assert stderr_art.get("sha256") == hashlib.sha256(stderr_bytes).hexdigest()
++        assert stderr_art.get("size_bytes") == len(stderr_bytes)
++
++        # The receipt itself (via CommandResult identity) MUST match the
++        # sealed envelope -- command_id and exit_code at minimum.
++        evidence = result.red_qualification_evidence
++        assert evidence is not None
++        assert sealed_recv.get("command_id") == evidence.command_receipt_id
++
++
++# ---------------------------------------------------------------------------
++# B3 -- sealed envelope projection equals controlled receipt
++# ---------------------------------------------------------------------------
++
++
++class TestSealedReceiptEqualsControlledReceipt:
++    def test_sealed_envelope_carries_receipt_command_id(
++        self, tmp_path: Path
++    ) -> None:
++        """The sealed envelope's red_observation_receipt MUST carry the
++        SAME command_id as the qualification evidence's command_receipt_id
++        (no replay, no recomputation)."""
++        repo = _write_calc_repo(tmp_path / "env", broken=True)
++        _stage_expectation(repo, fingerprint=_fp(VERIFICATION_COMMAND))
++        result = _run(repo, proposal=_proposal(CALC_BROKEN, CALC_FIXED))
++
++        evidence = result.red_qualification_evidence
++        sealed_recv = result.sealed_evidence.get("red_observation_receipt")
++        assert isinstance(sealed_recv, dict)
++        assert sealed_recv.get("command_id") == evidence.command_receipt_id
++
++    def test_sealed_envelope_artifacts_match_disk_after_fix(
++        self, tmp_path: Path
++    ) -> None:
++        """The sealed envelope's stdout_artifact.sha256 / size_bytes
++        MUST match the persisted file's bytes (artifact byte test).
++        Same for stderr."""
++        repo = _write_calc_repo(tmp_path / "disk", broken=True)
++        _stage_expectation(repo, fingerprint=_fp(VERIFICATION_COMMAND))
++        result = _run(repo, proposal=_proposal(CALC_BROKEN, CALC_FIXED))
++
++        sealed_recv = result.sealed_evidence.get("red_observation_receipt")
++        assert isinstance(sealed_recv, dict)
++        for stream in ("stdout_artifact", "stderr_artifact"):
++            artifact = sealed_recv.get(stream)
++            assert isinstance(artifact, dict), f"missing {stream}"
++            ref = artifact.get("ref")
++            assert isinstance(ref, str) and ref
++            data = Path(ref).read_bytes()
++            assert (
++                hashlib.sha256(data).hexdigest() == artifact.get("sha256")
++            ), f"B3: {stream} sha does not match persisted file"
++            assert artifact.get("size_bytes") == len(data), (
++                f"B3: {stream} size_bytes does not match persisted file"
++            )
+diff --git a/tests/contract/test_rq8_p1_r3_r3_post_comparator_lineage.py b/tests/contract/test_rq8_p1_r3_r3_post_comparator_lineage.py
+new file mode 100644
+index 0000000..24d4909
+--- /dev/null
++++ b/tests/contract/test_rq8_p1_r3_r3_post_comparator_lineage.py
+@@ -0,0 +1,466 @@
++"""RQ8-P1-R3-R3 Phase A pre-repair RED tests -- post-comparator RED lineage.
++
++These tests pin RQ8-P1-R3-R3 §A. Every post-comparator branch MUST preserve
++the comparator's sealed evidence (qualification + observation receipt)
++all the way to the terminal decision. R3-R2 already closes the
++proposal/admission/path-gate short-circuit (Q2 lineage); R3-R3 closes the
++four remaining gaps identified in
++``R3_R3_POST_COMPARATOR_BRANCH_CENSUS.json``:
++
++    1. VERIFICATION_COMMAND_NOT_RESOLVED_BLOCK_ON_ZERO_WRITE_PATH
++    2. VERIFICATION_FAILED_ENVELOPE_ON_ZERO_WRITE_PATH
++    3. VERIFICATION_FAILED_RESULT_ON_ZERO_WRITE_PATH
++    4. VERIFICATION_COMMAND_NOT_RESOLVED_BLOCK_ON_POSITIVE_PATH
++
++Pre-repair (HEAD 95431b37), tests F1/F2/F3 FAIL because the lineage is
++dropped on those branches. Post-repair, every test PASSES because the
++``_block()`` helper carries the comparator evidence (qualification and
++actual controlled observation receipt) on every post-comparator branch,
++and the result projection carries the same identity.
++"""
++from __future__ import annotations
++
++import hashlib
++import json
++import sys
++import textwrap
++from pathlib import Path
++from typing import Any
++
++import pytest
++
++from synapx_harness.kernel.governed_execution import (
++    GovernedExecutionRequest,
++    _fixture_root_sha,
++    run_governed_execution,
++)
++from synapx_harness.kernel.mutation_authority import (
++    ControlledPatchApplicator,
++)
++from synapx_harness.kernel.mutation_proposal_contract import (
++    PROPOSAL_BEGIN,
++    PROPOSAL_END,
++)
++
++CALC_BROKEN = "def add(a, b):\n    return a + b\n"
++
++CALC_FIXED = (
++    "def add(a, b):\n"
++    "    return a + b\n"
++    "\n"
++    "\n"
++    "def subtract(a, b):\n"
++    "    return a - b\n"
++)
++
++CALC_TEST = textwrap.dedent(
++    """\
++    import calculator
++
++
++    def test_add():
++        assert calculator.add(2, 3) == 5
++
++
++    def test_subtract():
++        assert calculator.subtract(5, 3) == 2
++    """
++)
++
++CALC_TASK = (
++    "Fix the subtract regression.\n"
++    "\n"
++    "Allowed write paths:\n"
++    "- calculator.py\n"
++    "\n"
++    "Do not modify unrelated files.\n"
++    "Run the repository's authoritative tests and only complete "
++    "if verification passes.\n"
++)
++
++CALC_FAILED_IDS = ["tests/test_calculator.py::test_subtract"]
++VERIFICATION_COMMAND = [sys.executable, "-m", "pytest", "-q"]
++EXPECTATION_FILENAME = ".synapx_red_expectation.json"
++
++
++def _fp(command: list[str]) -> str:
++    return hashlib.sha256(
++        json.dumps(command, separators=(",", ":"), ensure_ascii=True).encode(
++            "utf-8"
++        )
++    ).hexdigest()
++
++
++def _write_calc_repo(root: Path, *, broken: bool) -> Path:
++    root.mkdir(parents=True, exist_ok=True)
++    (root / "calculator.py").write_text(
++        CALC_BROKEN if broken else CALC_FIXED, encoding="utf-8"
++    )
++    tests_dir = root / "tests"
++    tests_dir.mkdir(exist_ok=True)
++    (tests_dir / "__init__.py").write_text("", encoding="utf-8")
++    (tests_dir / "test_calculator.py").write_text(CALC_TEST, encoding="utf-8")
++    return root
++
++
++def _stage_expectation(
++    repo: Path,
++    *,
++    revision: str | None = None,
++    fingerprint: str | None = None,
++    failed_ids: list[str] | None = None,
++) -> Path:
++    path = repo / EXPECTATION_FILENAME
++    payload: dict[str, object] = {
++        "expectation_id": "test/r3r3/expectation/v1",
++        "expectation_version": 1,
++        "status": "QUALIFIED",
++        "source_type": "BENCHMARK_FIXTURE",
++        "source_revision": (
++            revision if revision is not None else _fixture_root_sha(repo)
++        ),
++        "verification_command_fingerprint": fingerprint or "",
++        "expected_exit_code": 1,
++        "match_rule": "EXACT_FAILED_TEST_IDS",
++        "required_failed_test_ids": (
++            list(CALC_FAILED_IDS) if failed_ids is None else list(failed_ids)
++        ),
++        "provenance": {"source_ref": "test", "source_sha256": "a" * 64},
++    }
++    path.write_text(json.dumps(payload), encoding="utf-8")
++    return path
++
++
++def _proposal(old: str, new: str, path: str = "calculator.py") -> str:
++    return (
++        f"{PROPOSAL_BEGIN}\n"
++        f"FILE: {path}\n"
++        f"<<<< OLD\n"
++        f"{old}\n"
++        f">>>> OLD\n"
++        f"<<<< NEW\n"
++        f"{new}\n"
++        f">>>> NEW\n"
++        f"{PROPOSAL_END}\n"
++    )
++
++
++def _run(repo: Path, *, proposal: str, verification_command: list[str] | None = None):
++    return run_governed_execution(
++        GovernedExecutionRequest(
++            workspace_root=repo,
++            task=CALC_TASK,
++            verification_command=(
++                list(verification_command)
++                if verification_command is not None
++                else list(VERIFICATION_COMMAND)
++            ),
++            codex_stdout_override=proposal,
++        )
++    )
++
++
++def _force_zero_write_applicator(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """Replace ``ControlledPatchApplicator.apply`` so the applicator
++    returns success=False with ``write_count=0`` and ``mutation_attempted=True``
++    (the zero-write downstream branch)."""
++
++    original_apply = ControlledPatchApplicator.apply
++
++    def zero_write_apply(self, *args: Any, **kwargs: Any):
++        result = original_apply(self, *args, **kwargs)
++        if result.write_count > 0:
++            from synapx_harness.kernel.mutation_authority import ApplyReceipt
++
++            return ApplyReceipt(
++                applied_paths=[],
++                before_sha256="",
++                after_sha256="",
++                patch_sha256="",
++                canonical_patch_sha256="",
++                write_count=0,
++                denied_reason="FORCED_ZERO_WRITE_FOR_R3_R3_TEST",
++                apply_started_at="",
++                apply_completed_at="",
++                authorization_ref=(
++                    result.authorization_ref
++                    if getattr(result, "authorization_ref", None)
++                    else ""
++                ),
++                admission_receipt_id=(
++                    result.admission_receipt_id
++                    if getattr(result, "admission_receipt_id", None)
++                    else ""
++                ),
++                path_gate_receipt_id=(
++                    result.path_gate_receipt_id
++                    if getattr(result, "path_gate_receipt_id", None)
++                    else ""
++                ),
++                source_revision=(
++                    result.source_revision
++                    if getattr(result, "source_revision", None)
++                    else ""
++                ),
++            )
++        return result
++
++    monkeypatch.setattr(ControlledPatchApplicator, "apply", zero_write_apply)
++
++
++# ---------------------------------------------------------------------------
++# F1 -- MATCH then zero-write/downstream failure: lineage preserved
++# ---------------------------------------------------------------------------
++
++
++class TestPostComparatorZeroWriteLineage:
++    def test_match_then_zero_write_preserves_lineage(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        """F1: comparator MATCHes -> applicator produces zero writes ->
++        terminal BLOCKED. Both qualification evidence AND observation
++        receipt MUST survive into the result and sealed envelope.
++        """
++        repo = _write_calc_repo(tmp_path / "zw", broken=True)
++        _stage_expectation(
++            repo,
++            fingerprint=_fp(VERIFICATION_COMMAND),
++            failed_ids=list(CALC_FAILED_IDS),
++        )
++
++        _force_zero_write_applicator(monkeypatch)
++
++        result = _run(repo, proposal=_proposal(CALC_BROKEN, CALC_FIXED))
++
++        # Comparator MATCHed before the forced zero-write.
++        assert result.red_qualification_evidence is not None, (
++            "F1: zero-write branch dropped comparator evidence"
++        )
++        assert result.red_qualification_evidence.match_result is True, (
++            "F1: comparator evidence must carry MATCH"
++        )
++        assert result.red_observation_receipt is not None, (
++            "F1: zero-write branch dropped observation receipt"
++        )
++
++        # Sealed envelope carries BOTH under the same identity.
++        sealed = result.sealed_evidence
++        assert isinstance(sealed, dict) and sealed
++        qualification = sealed.get("red_qualification")
++        assert isinstance(qualification, dict), (
++            "F1: sealed envelope lost red_qualification on zero-write path"
++        )
++        assert (
++            qualification.get("qualification_id")
++            == result.red_qualification_evidence.qualification_id
++        ), "F1: sealed/run identity mismatch on zero-write path"
++        receipt = sealed.get("red_observation_receipt")
++        assert isinstance(receipt, dict), (
++            "F1: sealed envelope lost red_observation_receipt on zero-write path"
++        )
++        assert (
++            receipt.get("command_id")
++            == result.red_qualification_evidence.command_receipt_id
++        ), "F1: receipt/evidence command identity mismatch on zero-write path"
++
++    def test_match_then_verification_failure_preserves_lineage(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        """F1b: comparator MATCHes -> applicator zero-writes -> verifier
++        runs and FAILS. Both qualification and observation receipt MUST
++        be sealed into the FAILED envelope (gap 2/3)."""
++        repo = _write_calc_repo(tmp_path / "vf", broken=True)
++        _stage_expectation(
++            repo,
++            fingerprint=_fp(VERIFICATION_COMMAND),
++            failed_ids=list(CALC_FAILED_IDS),
++        )
++
++        _force_zero_write_applicator(monkeypatch)
++
++        result = _run(repo, proposal=_proposal(CALC_BROKEN, CALC_FIXED))
++
++        # Sealed envelope must carry the actual controlled receipt.
++        sealed = result.sealed_evidence
++        assert isinstance(sealed, dict) and sealed
++        qualification = sealed.get("red_qualification")
++        receipt = sealed.get("red_observation_receipt")
++        assert isinstance(qualification, dict)
++        assert isinstance(receipt, dict), (
++            "F1b: post-apply verification-failure envelope lost "
++            "red_observation_receipt (R3-R3 gap 3)"
++        )
++        assert (
++            receipt.get("command_id")
++            == result.red_qualification_evidence.command_receipt_id
++        )
++
++        # Result projection also carries both.
++        projected = result.to_dict()
++        assert projected.get("red_observation_receipt") is not None, (
++            "F1b: result.to_dict dropped red_observation_receipt on "
++            "verification-failure path (R3-R3 gap 4)"
++        )
++
++
++# ---------------------------------------------------------------------------
++# F2 -- MATCH then verification-command resolution failure: lineage preserved
++# ---------------------------------------------------------------------------
++
++
++class TestPostComparatorVerificationCommandResolutionLineage:
++    def test_match_then_d3_preserves_lineage_on_zero_write_path(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        """F2: comparator MATCHes -> applicator zero-writes -> the
++        verification command becomes unresolvable (D3) between the
++        comparator stage and the verification stage. The D3 BLOCKED
++        MUST still carry qualification + observation receipt (gap 1)."""
++        import synapx_harness.kernel.governed_execution as gov
++
++        repo = _write_calc_repo(tmp_path / "d3zw", broken=True)
++        _stage_expectation(
++            repo,
++            fingerprint=_fp(VERIFICATION_COMMAND),
++            failed_ids=list(CALC_FAILED_IDS),
++        )
++
++        _force_zero_write_applicator(monkeypatch)
++
++        # First call (scope resolution at WorkContract build) returns
++        # the valid command so the comparator MATCHes. Second call
++        # (verification stage) returns None so D3 fires with lineage
++        # already produced by the comparator.
++        calls: list[int] = []
++
++        def scripted(
++            *, request: Any, workspace_root: Any
++        ) -> list[str] | None:
++            calls.append(1)
++            if len(calls) == 1:
++                return list(VERIFICATION_COMMAND)
++            return None
++
++
++        monkeypatch.setattr(gov, "_effective_verification_command", scripted)
++
++        result = _run(repo, proposal=_proposal(CALC_BROKEN, CALC_FIXED))
++
++        # Comparator MATCHed before mutation; lineage MUST survive D3.
++        assert result.red_qualification_evidence is not None, (
++            "F2: D3 block on zero-write path dropped qualification evidence"
++        )
++        assert result.red_qualification_evidence.match_result is True
++        assert result.red_observation_receipt is not None, (
++            "F2: D3 block on zero-write path dropped observation receipt"
++        )
++        assert result.primary_failure_class == "VERIFICATION_COMMAND_NOT_RESOLVED"
++
++        sealed = result.sealed_evidence
++        assert isinstance(sealed, dict) and sealed
++        assert isinstance(sealed.get("red_qualification"), dict)
++        assert isinstance(sealed.get("red_observation_receipt"), dict)
++
++    def test_match_then_d3_preserves_lineage_on_positive_path(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        """F2b: comparator MATCHes -> mutation success -> verification
++        command becomes unresolvable (D3) at the verification stage.
++        The D3 BLOCKED MUST still carry qualification + observation
++        receipt (gap 4)."""
++        repo = _write_calc_repo(tmp_path / "d3pos", broken=True)
++        _stage_expectation(
++            repo,
++            fingerprint=_fp(VERIFICATION_COMMAND),
++            failed_ids=list(CALC_FAILED_IDS),
++        )
++
++        calls: list[int] = []
++
++        def scripted(
++            *, request: Any, workspace_root: Any
++        ) -> list[str] | None:
++            calls.append(1)
++            if len(calls) == 1:
++                return list(VERIFICATION_COMMAND)
++            return None
++
++        import synapx_harness.kernel.governed_execution as gov
++
++        monkeypatch.setattr(gov, "_effective_verification_command", scripted)
++
++        result = _run(repo, proposal=_proposal(CALC_BROKEN, CALC_FIXED))
++
++        # Comparator MATCHed before mutation; lineage MUST survive.
++        assert result.red_qualification_evidence is not None, (
++            "F2b: D3 block on positive path dropped qualification evidence"
++        )
++        assert result.red_qualification_evidence.match_result is True
++        assert result.red_observation_receipt is not None, (
++            "F2b: D3 block on positive path dropped observation receipt"
++        )
++        assert result.primary_failure_class == "VERIFICATION_COMMAND_NOT_RESOLVED"
++
++        sealed = result.sealed_evidence
++        assert isinstance(sealed, dict) and sealed
++        assert isinstance(sealed.get("red_qualification"), dict)
++        assert isinstance(sealed.get("red_observation_receipt"), dict), (
++            "F2b: D3 block on positive path dropped observation receipt "
++            "from sealed envelope (R3-R3 gap 4)"
++        )
++
++
++# ---------------------------------------------------------------------------
++# F3 -- later BLOCKED terminal: qualification_id + command_receipt_id preserved
++# ---------------------------------------------------------------------------
++
++
++class TestPostComparatorTerminalPreservation:
++    def test_qualification_and_command_identity_preserved_on_zero_write(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        """F3: zero-write downstream failure -> BLOCKED. The terminal
++        decision must carry the SAME qualification_id and
++        command_receipt_id as the sealed envelope and the receipt
++        projection. Identity loss across these surfaces is a hard
++        lineage gap."""
++        repo = _write_calc_repo(tmp_path / "ti", broken=True)
++        _stage_expectation(
++            repo,
++            fingerprint=_fp(VERIFICATION_COMMAND),
++            failed_ids=list(CALC_FAILED_IDS),
++        )
++
++        _force_zero_write_applicator(monkeypatch)
++
++        result = _run(repo, proposal=_proposal(CALC_BROKEN, CALC_FIXED))
++
++        evidence = result.red_qualification_evidence
++        receipt = result.red_observation_receipt
++        assert evidence is not None
++        assert receipt is not None
++
++        # Three surfaces must carry the same identity.
++        sealed = result.sealed_evidence
++        assert isinstance(sealed, dict)
++        sealed_qual = sealed.get("red_qualification")
++        sealed_recv = sealed.get("red_observation_receipt")
++        assert isinstance(sealed_qual, dict)
++        assert isinstance(sealed_recv, dict)
++        assert sealed_qual.get("qualification_id") == evidence.qualification_id
++        assert sealed_recv.get("command_id") == evidence.command_receipt_id
++        assert sealed_recv.get("command_id") == receipt.get("command_id")
++
++        projected = result.to_dict()
++        proj_qual = projected.get("red_qualification_evidence")
++        proj_recv = projected.get("red_observation_receipt")
++        assert isinstance(proj_qual, dict)
++        assert isinstance(proj_recv, dict)
++        assert proj_qual.get("qualification_id") == evidence.qualification_id
++        assert proj_recv.get("command_id") == evidence.command_receipt_id
++
++        # Terminal decision reflects BLOCKED/FAILED.
++        assert result.terminal_decision is not None
++        assert result.terminal_decision.decision in ("FAILED", "BLOCKED")
