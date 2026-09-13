@@ -1,6 +1,6 @@
 [project]
 name = "synapx-harness"
-version = "0.1.0-dev"
+version = "0.1.0"
 description = "Assurance harness for governed coding-agent execution, verification, evidence, and completion control."
 requires-python = ">=3.12"
 license = "Apache-2.0"
