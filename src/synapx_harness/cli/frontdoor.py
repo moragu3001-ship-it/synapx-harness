@@ -142,6 +142,37 @@ REASON_EMPTY_TASK: str = "EMPTY_TASK"
 REASON_RUNTIME_UNAVAILABLE: str = "RUNTIME_UNAVAILABLE"
 
 
+# Bounded public execution timeout (Public Alpha Timeout Control).
+# The canonical default is 120 seconds. The CLI only exposes the
+# existing GovernedFrontDoorRuntimeBridge capability; it never
+# creates a second timeout authority and never reads environment.
+FRONTDOOR_DEFAULT_TIMEOUT_SECONDS: int = 120
+FRONTDOOR_TIMEOUT_MIN_SECONDS: int = 1
+FRONTDOOR_TIMEOUT_MAX_SECONDS: int = 3600
+
+
+def _validate_timeout_seconds_value(value: int) -> int:
+    """Validate the bounded public timeout, failing closed."""
+    is_int = isinstance(value, int) and not isinstance(value, bool)
+    if is_int and (
+        FRONTDOOR_TIMEOUT_MIN_SECONDS <= value <= FRONTDOOR_TIMEOUT_MAX_SECONDS
+    ):
+        return value
+    typer.echo("NEEDS_ATTENTION", err=True)
+    typer.echo(
+        "Reason: --timeout-seconds must be an integer in "
+        f"[{FRONTDOOR_TIMEOUT_MIN_SECONDS}, "
+        f"{FRONTDOOR_TIMEOUT_MAX_SECONDS}].",
+        err=True,
+    )
+    raise typer.Exit(code=1)
+
+
+def _timeout_seconds_callback(value: int) -> int:
+    """Typer callback for --timeout-seconds (fail-closed)."""
+    return _validate_timeout_seconds_value(value)
+
+
 def _version_callback(value: bool) -> None:
     if value:
         typer.echo(f"synapx {_distribution_version()}")
@@ -277,7 +308,10 @@ def _map_to_presentation(result: object | None) -> str:
     return PRESENTATION_MAP.get(status, "NEEDS_ATTENTION")
 
 
-def _build_runtime(workspace: Path) -> RuntimePort:
+def _build_runtime(
+    workspace: Path,
+    timeout_seconds: int = FRONTDOOR_DEFAULT_TIMEOUT_SECONDS,
+) -> RuntimePort:
     """Construct the workspace-bound RuntimePort bridge.
 
     RQ8-P0 authority convergence: the default entry drives the canonical
@@ -290,7 +324,11 @@ def _build_runtime(workspace: Path) -> RuntimePort:
         GovernedFrontDoorRuntimeBridge,
     )
 
-    return GovernedFrontDoorRuntimeBridge(workspace_root=str(workspace))
+    validated = _validate_timeout_seconds_value(timeout_seconds)
+    return GovernedFrontDoorRuntimeBridge(
+        workspace_root=str(workspace),
+        timeout_seconds=validated,
+    )
 
 
 def _missing_codex_user_message() -> tuple[str, str]:
@@ -315,6 +353,7 @@ def run(
     workspace: Path | None = None,
     task: str | None = None,
     runtime: RuntimePort | None = None,
+    timeout_seconds: int = FRONTDOOR_DEFAULT_TIMEOUT_SECONDS,
 ) -> None:
     """Run synapx front door.
 
@@ -323,14 +362,31 @@ def run(
         task: Task description. Prompts stdin if None.
         runtime: Runtime port for execution. If None, the workspace-bound
             canonical bridge is constructed on demand.
+        timeout_seconds: Bounded execution timeout passed to the
+            governed bridge. Defaults to 120 seconds.
     """
+    _validate_timeout_seconds_value(timeout_seconds)
     _render_progress("Detecting workspace")
     workspace_name, workspace_path = _detect_workspace(workspace)
     typer.echo(f"Workspace: {workspace_name}")
 
     _render_progress("Checking agent capability")
     if runtime is None:
-        runtime = _build_runtime(workspace_path)
+        try:
+            runtime = _build_runtime(
+                workspace_path, timeout_seconds=timeout_seconds
+            )
+        except TypeError as exc:
+            if "timeout_seconds" not in str(exc):
+                raise
+            if timeout_seconds != FRONTDOOR_DEFAULT_TIMEOUT_SECONDS:
+                typer.echo("NEEDS_ATTENTION", err=True)
+                typer.echo(
+                    "Reason: runtime builder does not accept timeout.",
+                    err=True,
+                )
+                raise typer.Exit(code=1) from exc
+            runtime = _build_runtime(workspace_path)
     agent_available = runtime.is_available()
     agent_name = "Codex" if agent_available else "Codex unavailable"
     typer.echo(f"Agent: {agent_name}")
@@ -591,6 +647,17 @@ TaskOption = Annotated[
     str | None,
     typer.Option("--task", "-t", help="Task description."),
 ]
+TimeoutSecondsOption = Annotated[
+    int,
+    typer.Option(
+        "--timeout-seconds",
+        help=(
+            "Bounded execution timeout in seconds "
+            "(1-3600; default 120)."
+        ),
+        callback=_timeout_seconds_callback,
+    ),
+]
 
 
 HELP_SHORT_DESCRIPTION: str = (
@@ -603,10 +670,14 @@ HELP_LONG_DESCRIPTION: str = (
     "Public Alpha supported agent: Codex Official Headless CLI.\n\n"
     "First run:\n"
     "  synapx doctor\n"
-    "  synapx --workspace <repo> --task \"<task>\"\n\n"
+    "  synapx --workspace <repo> --task \"<task>\"\n"
+    "  synapx --workspace <repo> --task \"<task>\" "
+    "--timeout-seconds 600\n\n"
     "Options:\n"
     "  --workspace / -w  Repository path (defaults to current directory).\n"
-    "  --task / -t       Task description. If omitted, SynapX reads from stdin.\n\n"
+    "  --task / -t       Task description. If omitted, SynapX reads from stdin.\n"
+    "  --timeout-seconds Bounded execution timeout in seconds "
+    "(1-3600; default 120).\n\n"
     "Use `synapx doctor` to diagnose Codex CLI readiness before running a task."
 )
 
@@ -619,6 +690,7 @@ def frontdoor(
     ),
     workspace: WorkspaceOption = None,
     task: TaskOption = None,
+    timeout_seconds: TimeoutSecondsOption = FRONTDOOR_DEFAULT_TIMEOUT_SECONDS,
     help_flag: bool = typer.Option(
         False,
         "--help",
@@ -631,14 +703,42 @@ def frontdoor(
     if ctx.invoked_subcommand is not None:
         return
     if task is not None:
-        run(workspace=workspace, task=task)
+        try:
+            run(
+                workspace=workspace,
+                task=task,
+                timeout_seconds=timeout_seconds,
+            )
+        except TypeError as exc:
+            if "timeout_seconds" not in str(exc):
+                raise
+            if timeout_seconds != FRONTDOOR_DEFAULT_TIMEOUT_SECONDS:
+                typer.echo("NEEDS_ATTENTION", err=True)
+                typer.echo(
+                    "Reason: runtime builder does not accept timeout.",
+                    err=True,
+                )
+                raise typer.Exit(code=1) from exc
+            run(workspace=workspace, task=task)
         return
     if sys.stdin.isatty():
         raise typer.Exit(code=run_console(workspace=workspace))
     # Non-TTY without --task: legacy fail-safe. A single stdin read drives a
     # single governed execution and the process exits. The console loop is
     # never entered when stdin is not interactive (headless / CI / piped).
-    run(workspace=workspace, task=None)
+    try:
+        run(workspace=workspace, task=None, timeout_seconds=timeout_seconds)
+    except TypeError as exc:
+        if "timeout_seconds" not in str(exc):
+            raise
+        if timeout_seconds != FRONTDOOR_DEFAULT_TIMEOUT_SECONDS:
+            typer.echo("NEEDS_ATTENTION", err=True)
+            typer.echo(
+                "Reason: runtime builder does not accept timeout.",
+                err=True,
+            )
+            raise typer.Exit(code=1) from exc
+        run(workspace=workspace, task=None)
 
 
 _HELP_FLAG_RE = re.compile(r"--help\b")
@@ -689,13 +789,20 @@ governed_app = typer.Typer(
 frontdoor_app.add_typer(governed_app, name="run")
 
 
-def _build_governed_runtime(workspace: Path) -> Any:
+def _build_governed_runtime(
+    workspace: Path,
+    timeout_seconds: int = FRONTDOOR_DEFAULT_TIMEOUT_SECONDS,
+) -> Any:
     """Construct the workspace-bound governed runtime bridge."""
     from synapx_harness.cli.governed_runtime_bridge import (
         GovernedFrontDoorRuntimeBridge,
     )
 
-    return GovernedFrontDoorRuntimeBridge(workspace_root=str(workspace))
+    validated = _validate_timeout_seconds_value(timeout_seconds)
+    return GovernedFrontDoorRuntimeBridge(
+        workspace_root=str(workspace),
+        timeout_seconds=validated,
+    )
 
 
 def _render_governed_result(presentation: PresentationResult) -> str:
@@ -743,6 +850,7 @@ def governed_callback(
     ctx: typer.Context,
     workspace: WorkspaceOption = None,
     task: TaskOption = None,
+    timeout_seconds: TimeoutSecondsOption = FRONTDOOR_DEFAULT_TIMEOUT_SECONDS,
     receipt_out: Annotated[
         Path | None,
         typer.Option(
@@ -758,13 +866,28 @@ def governed_callback(
     """Run the RQ4-R2-C3 public governed lifecycle."""
     if ctx.invoked_subcommand is not None:
         return
+    _validate_timeout_seconds_value(timeout_seconds)
     if not task:
         typer.echo("NEEDS_ATTENTION", err=True)
         typer.echo("Reason: --task is required for the governed run.", err=True)
         raise typer.Exit(code=1)
     workspace_name, workspace_path = _detect_workspace(workspace)
     typer.echo(f"Workspace: {workspace_name}")
-    runtime = _build_governed_runtime(workspace_path)
+    try:
+        runtime = _build_governed_runtime(
+            workspace_path, timeout_seconds=timeout_seconds
+        )
+    except TypeError as exc:
+        if "timeout_seconds" not in str(exc):
+            raise
+        if timeout_seconds != FRONTDOOR_DEFAULT_TIMEOUT_SECONDS:
+            typer.echo("NEEDS_ATTENTION", err=True)
+            typer.echo(
+                "Reason: runtime builder does not accept timeout.",
+                err=True,
+            )
+            raise typer.Exit(code=1) from exc
+        runtime = _build_governed_runtime(workspace_path)
 
     if receipt_out is not None:
         # Duck-type the runtime: the canonical ``GovernedFrontDoorRuntimeBridge``

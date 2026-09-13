@@ -570,3 +570,536 @@ class TestRQ3R2InvalidWorkspaceRegression:
         output = result.stdout + result.stderr
         assert "NEEDS_ATTENTION" in output
         assert "not a directory" in output
+
+
+# ---------------------------------------------------------------------------
+# Public Alpha Timeout Control (bounded --timeout-seconds)
+# ---------------------------------------------------------------------------
+
+
+class TestTimeoutControlDefaults:
+    def test_omitted_timeout_preserves_120_default_entry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from synapx_harness.cli import frontdoor as fd
+
+        captured: dict[str, object] = {}
+
+        class _FakeRuntime:
+            def is_available(self) -> bool:
+                return True
+
+            def invoke(self, task: str) -> object:
+                return fd.PresentationResult("BLOCKED", "seam")
+
+        def _fake_build(
+            workspace: Path, timeout_seconds: int = 120
+        ) -> object:
+            captured["timeout_seconds"] = timeout_seconds
+            captured["workspace"] = workspace
+            return _FakeRuntime()
+
+        monkeypatch.setattr(fd, "_build_runtime", _fake_build)
+        runner = CliRunner()
+        result = runner.invoke(
+            fd.frontdoor_app,
+            ["--workspace", str(tmp_path), "--task", "hello"],
+        )
+        assert captured["timeout_seconds"] == 120
+        assert result.exit_code != 0
+
+    def test_omitted_timeout_preserves_120_governed_entry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from synapx_harness.cli import frontdoor as fd
+
+        captured: dict[str, object] = {}
+
+        class _FakeRuntime:
+            def invoke(self, task: str) -> object:
+                return fd.PresentationResult("BLOCKED", "seam")
+
+        def _fake_build(
+            workspace: Path, timeout_seconds: int = 120
+        ) -> object:
+            captured["timeout_seconds"] = timeout_seconds
+            return _FakeRuntime()
+
+        monkeypatch.setattr(fd, "_build_governed_runtime", _fake_build)
+        runner = CliRunner()
+        result = runner.invoke(
+            fd.frontdoor_app,
+            ["run", "--workspace", str(tmp_path), "--task", "hello"],
+        )
+        assert captured["timeout_seconds"] == 120
+        assert result.exit_code != 0
+
+    def test_default_constant_is_120(self) -> None:
+        from synapx_harness.cli import frontdoor as fd
+
+        assert fd.FRONTDOOR_DEFAULT_TIMEOUT_SECONDS == 120
+        assert fd.FRONTDOOR_TIMEOUT_MIN_SECONDS == 1
+        assert fd.FRONTDOOR_TIMEOUT_MAX_SECONDS == 3600
+
+
+class TestTimeoutControlPropagation:
+    def test_timeout_600_reaches_governed_runtime_default_entry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from synapx_harness.cli import frontdoor as fd
+
+        captured: dict[str, object] = {}
+
+        class _FakeRuntime:
+            def is_available(self) -> bool:
+                return True
+
+            def invoke(self, task: str) -> object:
+                return fd.PresentationResult("BLOCKED", "seam")
+
+        def _fake_build(
+            workspace: Path, timeout_seconds: int = 120
+        ) -> object:
+            captured["timeout_seconds"] = timeout_seconds
+            return _FakeRuntime()
+
+        monkeypatch.setattr(fd, "_build_runtime", _fake_build)
+        runner = CliRunner()
+        result = runner.invoke(
+            fd.frontdoor_app,
+            [
+                "--workspace",
+                str(tmp_path),
+                "--task",
+                "hello",
+                "--timeout-seconds",
+                "600",
+            ],
+        )
+        assert captured["timeout_seconds"] == 600
+        assert result.exit_code != 0
+        assert "VERIFIED" not in result.output
+
+    def test_timeout_600_reaches_governed_runtime_governed_entry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from synapx_harness.cli import frontdoor as fd
+
+        captured: dict[str, object] = {}
+
+        class _FakeRuntime:
+            def invoke(self, task: str) -> object:
+                return fd.PresentationResult("BLOCKED", "seam")
+
+        def _fake_build(
+            workspace: Path, timeout_seconds: int = 120
+        ) -> object:
+            captured["timeout_seconds"] = timeout_seconds
+            return _FakeRuntime()
+
+        monkeypatch.setattr(fd, "_build_governed_runtime", _fake_build)
+        runner = CliRunner()
+        result = runner.invoke(
+            fd.frontdoor_app,
+            [
+                "run",
+                "--workspace",
+                str(tmp_path),
+                "--task",
+                "hello",
+                "--timeout-seconds",
+                "600",
+            ],
+        )
+        assert captured["timeout_seconds"] == 600
+        assert result.exit_code != 0
+        assert "VERIFIED" not in result.output
+
+    def test_build_runtime_constructs_bridge_with_600(
+        self, tmp_path: Path
+    ) -> None:
+        from synapx_harness.cli.frontdoor import _build_runtime
+
+        runtime = _build_runtime(tmp_path, timeout_seconds=600)
+        assert runtime._timeout_seconds == 600  # type: ignore[attr-defined]
+
+    def test_build_governed_constructs_bridge_with_600(
+        self, tmp_path: Path
+    ) -> None:
+        from synapx_harness.cli.frontdoor import _build_governed_runtime
+
+        runtime = _build_governed_runtime(tmp_path, timeout_seconds=600)
+        assert runtime._timeout_seconds == 600  # type: ignore[attr-defined]
+
+    def test_boundary_values_accepted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from synapx_harness.cli import frontdoor as fd
+
+        captured: dict[str, object] = {}
+
+        class _FakeRuntime:
+            def is_available(self) -> bool:
+                return True
+
+            def invoke(self, task: str) -> object:
+                return fd.PresentationResult("BLOCKED", "seam")
+
+        def _fake_build(
+            workspace: Path, timeout_seconds: int = 120
+        ) -> object:
+            captured["timeout_seconds"] = timeout_seconds
+            return _FakeRuntime()
+
+        monkeypatch.setattr(fd, "_build_runtime", _fake_build)
+        runner = CliRunner()
+        result_min = runner.invoke(
+            fd.frontdoor_app,
+            [
+                "--workspace",
+                str(tmp_path),
+                "--task",
+                "hello",
+                "--timeout-seconds",
+                "1",
+            ],
+        )
+        assert captured["timeout_seconds"] == 1
+        assert result_min.exit_code != 0
+        result_max = runner.invoke(
+            fd.frontdoor_app,
+            [
+                "--workspace",
+                str(tmp_path),
+                "--task",
+                "hello",
+                "--timeout-seconds",
+                "3600",
+            ],
+        )
+        assert captured["timeout_seconds"] == 3600
+        assert result_max.exit_code != 0
+
+
+class TestTimeoutControlRejection:
+    def test_zero_is_rejected_default_entry(
+        self, tmp_path: Path
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from synapx_harness.cli import frontdoor as fd
+
+        runner = CliRunner()
+        result = runner.invoke(
+            fd.frontdoor_app,
+            [
+                "--workspace",
+                str(tmp_path),
+                "--task",
+                "hello",
+                "--timeout-seconds",
+                "0",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "VERIFIED" not in result.output
+
+    def test_zero_is_rejected_governed_entry(
+        self, tmp_path: Path
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from synapx_harness.cli import frontdoor as fd
+
+        runner = CliRunner()
+        result = runner.invoke(
+            fd.frontdoor_app,
+            [
+                "run",
+                "--workspace",
+                str(tmp_path),
+                "--task",
+                "hello",
+                "--timeout-seconds",
+                "0",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "VERIFIED" not in result.output
+
+    def test_negative_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from synapx_harness.cli import frontdoor as fd
+
+        runner = CliRunner()
+        result = runner.invoke(
+            fd.frontdoor_app,
+            [
+                "--workspace",
+                str(tmp_path),
+                "--task",
+                "hello",
+                "--timeout-seconds",
+                "-5",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "VERIFIED" not in result.output
+
+    def test_above_max_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from synapx_harness.cli import frontdoor as fd
+
+        runner = CliRunner()
+        result = runner.invoke(
+            fd.frontdoor_app,
+            [
+                "--workspace",
+                str(tmp_path),
+                "--task",
+                "hello",
+                "--timeout-seconds",
+                "3601",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "VERIFIED" not in result.output
+
+    def test_large_unbounded_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from synapx_harness.cli import frontdoor as fd
+
+        runner = CliRunner()
+        result = runner.invoke(
+            fd.frontdoor_app,
+            [
+                "--workspace",
+                str(tmp_path),
+                "--task",
+                "hello",
+                "--timeout-seconds",
+                "100000",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "VERIFIED" not in result.output
+
+    def test_direct_run_rejects_zero(
+        self, tmp_path: Path
+    ) -> None:
+        from synapx_harness.cli import frontdoor as fd
+
+        class _FakeRuntime:
+            def is_available(self) -> bool:
+                return True
+
+            def invoke(self, task: str) -> object:
+                return fd.PresentationResult("BLOCKED", "seam")
+
+        try:
+            fd.run(
+                workspace=tmp_path,
+                task="hello",
+                runtime=_FakeRuntime(),  # type: ignore[arg-type]
+                timeout_seconds=0,
+            )
+        except typer.Exit as exc:
+            assert exc.exit_code != 0
+            return
+        raise AssertionError("zero timeout must raise typer.Exit")
+
+
+class TestTimeoutControlHelp:
+    def test_public_help_exposes_option(self, tmp_path: Path) -> None:
+        result = _run_frontdoor(
+            "--help", cwd=tmp_path, strip_codex_from_path=True
+        )
+        assert result.returncode == 0
+        assert "--timeout-seconds" in result.stdout
+        assert "600" in result.stdout
+
+    def test_governed_help_exposes_option(
+        self, tmp_path: Path
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from synapx_harness.cli import frontdoor as fd
+
+        runner = CliRunner()
+        result = runner.invoke(fd.frontdoor_app, ["run", "--help"])
+        assert result.exit_code == 0
+        assert "--timeout-seconds" in result.output
+
+
+class TestTimeoutControlSafety:
+    def test_default_terminal_mapping_unchanged(self) -> None:
+        from synapx_harness.cli.frontdoor import PRESENTATION_MAP
+
+        assert PRESENTATION_MAP["COMPLETED"] == "VERIFIED"
+        assert PRESENTATION_MAP["FAILED"] == "FAILED"
+        assert PRESENTATION_MAP["BLOCKED"] == "NEEDS_ATTENTION"
+
+    def test_timeout_override_cannot_produce_verified(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from synapx_harness.cli.frontdoor import PresentationResult
+        from synapx_harness.cli.frontdoor import run as fd_run
+
+        class _FakeBlockedRuntime:
+            def is_available(self) -> bool:
+                return True
+
+            def invoke(self, task: str) -> PresentationResult:
+                return PresentationResult("BLOCKED", "seam")
+
+        try:
+            fd_run(
+                task="hello",
+                runtime=_FakeBlockedRuntime(),  # type: ignore[arg-type]
+                timeout_seconds=600,
+            )
+        except typer.Exit:
+            pass
+        out = capsys.readouterr()
+        output = out.out + out.err
+        assert "VERIFIED" not in output
+        assert "NEEDS_ATTENTION" in output
+
+    def test_timeout_with_failed_still_failed(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from synapx_harness.cli.frontdoor import PresentationResult
+        from synapx_harness.cli.frontdoor import run as fd_run
+
+        class _FakeFailedRuntime:
+            def is_available(self) -> bool:
+                return True
+
+            def invoke(self, task: str) -> PresentationResult:
+                return PresentationResult("FAILED", "seam")
+
+        try:
+            fd_run(
+                task="hello",
+                runtime=_FakeFailedRuntime(),  # type: ignore[arg-type]
+                timeout_seconds=600,
+            )
+        except typer.Exit:
+            pass
+        out = capsys.readouterr()
+        output = out.out + out.err
+        assert "VERIFIED" not in output
+        assert "FAILED" in output
+
+    def test_workspace_and_task_behavior_unchanged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from synapx_harness.cli import frontdoor as fd
+
+        class _FakeRuntime:
+            def is_available(self) -> bool:
+                return True
+
+            def invoke(self, task: str) -> object:
+                assert task == "hello-task"
+                return fd.PresentationResult("BLOCKED", "seam")
+
+        monkeypatch.setattr(
+            fd, "_build_runtime", lambda ws, timeout_seconds=120: _FakeRuntime()
+        )
+        runner = CliRunner()
+        result = runner.invoke(
+            fd.frontdoor_app,
+            [
+                "--workspace",
+                str(tmp_path),
+                "--task",
+                "hello-task",
+                "--timeout-seconds",
+                "600",
+            ],
+        )
+        assert result.exit_code != 0
+        assert tmp_path.name in result.output
+        assert "VERIFIED" not in result.output
+
+    def test_invalid_workspace_still_rejected_with_timeout(
+        self, tmp_path: Path
+    ) -> None:
+        nonexistent = tmp_path / "no_such_ws_timeout_123"
+        result = _run_frontdoor(
+            "--workspace",
+            str(nonexistent),
+            "--task",
+            "hello",
+            "--timeout-seconds",
+            "600",
+            strip_codex_from_path=True,
+        )
+        assert result.returncode != 0
+        output = result.stdout + result.stderr
+        assert "NEEDS_ATTENTION" in output
+        assert "VERIFIED" not in output
+
+    def test_no_environment_variable_changes_timeout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from synapx_harness.cli import frontdoor as fd
+
+        captured: dict[str, object] = {}
+
+        class _FakeRuntime:
+            def is_available(self) -> bool:
+                return True
+
+            def invoke(self, task: str) -> object:
+                return fd.PresentationResult("BLOCKED", "seam")
+
+        def _fake_build(
+            workspace: Path, timeout_seconds: int = 120
+        ) -> object:
+            captured["timeout_seconds"] = timeout_seconds
+            return _FakeRuntime()
+
+        monkeypatch.setattr(fd, "_build_runtime", _fake_build)
+        monkeypatch.setenv("SYNAPX_TIMEOUT_SECONDS", "600")
+        monkeypatch.setenv("TIMEOUT_SECONDS", "600")
+        monkeypatch.setenv("SYNAPX_TIMEOUT", "600")
+        runner = CliRunner()
+        result = runner.invoke(
+            fd.frontdoor_app,
+            ["--workspace", str(tmp_path), "--task", "hello"],
+        )
+        assert captured["timeout_seconds"] == 120
+        assert result.exit_code != 0
+        assert "VERIFIED" not in result.output
+
+    def test_frontdoor_source_has_no_env_timeout_override(self) -> None:
+        frontdoor_path = CORE_ROOT / "src" / "synapx_harness" / "cli" / "frontdoor.py"
+        content = frontdoor_path.read_text(encoding="utf-8")
+        assert "SYNAPX_TIMEOUT_SECONDS" not in content
+        assert "SYNAPX_TIMEOUT" not in content
+        assert "os.environ.get" not in content
