@@ -415,6 +415,63 @@ def _block_reason_regex(reason: str) -> str:
     return "work contract|admitted|scope|risk|issuer"
 
 
+def _require_artifact_dir_in_scope(
+    artifact_dir: Path | str,
+    scope: list[str],
+    cwd: Path | None,
+) -> Path:
+    """Resolve ``artifact_dir`` and require WorkContract path containment.
+
+    RQ8-P1-R3-R3-R1 §4-§6, §8: the artifact directory is a controlled
+    filesystem side effect (``mkdir -p`` plus ``stdout.log`` /
+    ``stderr.log`` writes), so it must sit inside at least one
+    authoritative ``path:`` scope root. Containment is decided on
+    ``resolve()``d paths via the canonical :func:`_path_inside` seam --
+    no new path-comparison semantics. The resolved final artifact files
+    are checked as well so a pre-existing symlink pointing outside
+    scope fails closed instead of escaping on write.
+
+    Returns the resolved artifact directory. Raises :class:`ValueError`
+    (matching the ``(work contract|admitted|scope|risk|issuer)`` denial
+    surface) when no ``path:`` scope exists or anything resolves
+    outside scope.
+    """
+    allowed_paths = _extract_scope_paths(
+        [str(s) for s in scope if isinstance(s, str)]
+    )
+    if not allowed_paths:
+        raise ValueError(
+            "run_controlled artifact_dir requires an authoritative "
+            "path:* entry in WorkContract.scope "
+            "(work contract|admitted|scope)"
+        )
+    base = Path(cwd) if cwd is not None else Path.cwd()
+    candidate = Path(artifact_dir)
+    resolved_dir = (
+        (base / candidate).resolve()
+        if not candidate.is_absolute()
+        else candidate.resolve()
+    )
+    if not any(
+        _path_inside(str(resolved_dir), root) for root in allowed_paths
+    ):
+        raise ValueError(
+            "run_controlled artifact_dir falls outside WorkContract.scope "
+            f"{allowed_paths} (scope|path) {str(resolved_dir)!r}"
+        )
+    for name in ("stdout.log", "stderr.log"):
+        resolved_file = (resolved_dir / name).resolve()
+        if not any(
+            _path_inside(str(resolved_file), root)
+            for root in allowed_paths
+        ):
+            raise ValueError(
+                "run_controlled artifact file escapes WorkContract.scope "
+                f"{allowed_paths} (scope|path) {str(resolved_file)!r}"
+            )
+    return resolved_dir
+
+
 def run_controlled(
     command: str,
     work_contract: WorkContract | dict[str, object],
@@ -440,13 +497,19 @@ def run_controlled(
         and exposes their authoritative identity through the returned
         ``CommandResult``. When ``artifact_dir`` is ``None`` the legacy
         placeholder path shape is preserved (no on-disk artifact).
+        A non-``None`` ``artifact_dir`` is resolved and gated against
+        the authoritative ``path:`` scope roots (RQ8-P1-R3-R3-R1 §4-§6)
+        BEFORE any subprocess starts; the resolved directory is what
+        the runner persists to, so the receipt path is canonical.
 
     Raises
     ------
     ValueError
         When the contract does not bear an admitted scope, the
-        requested cwd falls outside scope, or the risk class is
-        R3 / R4 (blocked). The error message matches the regex
+        requested cwd falls outside scope, the risk class is
+        R3 / R4 (blocked), or a requested ``artifact_dir`` (or its
+        resolved artifact files) falls outside the ``path:`` scope.
+        The error message matches the regex
         ``(work contract|admitted|scope|risk|issuer)``.
     """
     wc: WorkContract | dict[str, object] = work_contract
@@ -483,6 +546,17 @@ def run_controlled(
             "(work contract|admitted|scope)"
         )
 
+    # RQ8-P1-R3-R3-R1 §5, §9: artifact-dir scope is enforced BEFORE the
+    # tool/cwd gates and before any subprocess starts, so a denial can
+    # never leave a partially executed command behind.
+    resolved_artifact_dir: Path | None = None
+    if artifact_dir is not None:
+        resolved_artifact_dir = _require_artifact_dir_in_scope(
+            artifact_dir,
+            [str(s) for s in scope if isinstance(s, str)],
+            cwd,
+        )
+
     allowed_tools = _extract_scope_tools([str(s) for s in scope if isinstance(s, str)])
     if allowed_tools:
         cmd_head = command.strip().split(maxsplit=1)[0] if command.strip() else ""
@@ -506,7 +580,10 @@ def run_controlled(
         cwd=cwd,
         timeout=timeout,
         capture_text=capture_text,
-        artifact_dir=artifact_dir,
+        artifact_dir=(
+            resolved_artifact_dir if resolved_artifact_dir is not None
+            else None
+        ),
     )
 
 
