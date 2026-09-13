@@ -2,7 +2,34 @@
 
 All notable changes to this project are documented here.
 
-## [0.1.0-dev] - Unreleased
+## [Unreleased] - Post-publication docs/metadata hotfix (main only)
+
+> This hotfix is documentation and repository metadata only. It is
+> not part of the immutable `v0.1.0` tag payload or release
+> artifacts. Runtime is unchanged. `0.1.1` is not created.
+
+### Added
+- `CONTRIBUTING.md`: minimal OSS contributor guide.
+- `SECURITY.md`: private vulnerability reporting policy (GitHub Private Vulnerability Reporting).
+
+### Changed
+- `KNOWN_LIMITATIONS.md`: retired pre-publication active-state claims; reflects released 0.1.0 truth. Install-path limitation narrowed to the qualified pip-wheel clean-install path.
+- `PUBLIC_ALPHA_SCOPE.md`: separated Scope Freeze from Qualification State; historical scope-freeze wording labeled as historical.
+- GitHub repository metadata: description and topic set aligned with the Public Alpha.
+
+## [0.1.0] - 2026-09-14 - Public Alpha
+
+### Added
+- Public Alpha publication: `v0.1.0` released on GitHub with public repository access.
+- RQ8 clean-room qualification accepted for the canonical governed Front Door path.
+- Bounded public timeout control for governed execution.
+- Public `README.md` / repository publication materials for the 0.1.0 Public Alpha.
+
+### Notes
+- No new functional capability beyond the already-qualified Public Alpha scope.
+- `v0.1.0` tag and release artifacts are immutable. No version 0.1.1 created; no tag moved; no qualification rerun.
+
+## [0.1.0-dev] - Unreleased (historical pre-release record, superseded by 0.1.0 above)
 
 ### Added
 - Apache License 2.0 (`LICENSE`) applied per Project Owner decision (D3).

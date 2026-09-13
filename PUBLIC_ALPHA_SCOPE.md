@@ -4,6 +4,28 @@ This document is the authoritative Public Alpha scope statement for
 SynapX-Harness as of release scope freeze. It is owned by the
 Project Owner and binding for the Public Alpha release.
 
+## Scope Freeze != Qualification State
+
+Scope freeze and qualification state are separate dimensions:
+
+- **Scope freeze** records which capabilities are in the Public
+  Alpha release scope (the buckets below). The frozen counts and
+  capability ID sets are unchanged.
+- **Qualification / release state** records what has since been
+  released and qualified. Current truth:
+  - `v0.1.0` Public Alpha released.
+  - GitHub public publication complete.
+  - RQ8-qualified governed Front Door path: the default `synapx`
+    Front Door converges on the canonical governed execution
+    under the same Harness-owned terminal authority as the
+    explicit governed path.
+  - Codex Official Headless CLI is the qualified provider.
+
+Statements below that predate the release and describe
+pre-release qualification targets are labeled `[HISTORICAL —
+scope-freeze wording]` where they are preserved. They are not
+current release truth.
+
 ## Scope buckets
 
 ```yaml
@@ -60,7 +82,7 @@ see
 
 | Stable capability ID | Description |
 |---|---|
-| CAP-001 | Python package identity (synapx-harness 0.1.0-dev) |
+| CAP-001 | Python package identity (synapx-harness 0.1.0-dev [HISTORICAL — scope-freeze wording; released as 0.1.0]) |
 | CAP-019 | Production mutation authority (5-stage fail-closed). Used internally by GovernedRuntimeProvider; not exposed via CLI. |
 | CAP-025 | Test fixture infrastructure (valid/invalid JSON envelopes) |
 | CAP-026 | `.kilo` backup vs current comparison tool (internal-only) |
@@ -103,9 +125,12 @@ See `KNOWN_LIMITATIONS.md` for the current qualification gaps.
 - It does not claim that benchmark superiority has been established.
 - It does not claim full agent coverage. Only Codex (headless CLI) is
   in the Public Alpha support contract.
-- It does not claim that the Front Door's default user-runtime
-  wiring is qualified. That is a separate release-qualification
-  target.
+- [HISTORICAL — scope-freeze wording] At scope freeze, the Front
+  Door's default user-runtime wiring was an open
+  release-qualification target. Current truth: the RQ8-qualified
+  governed Front Door path is released in `v0.1.0` (see
+  [Scope Freeze != Qualification State](#scope-freeze--qualification-state)
+  and `KNOWN_LIMITATIONS.md`).
 
 ## Authority
 

@@ -43,6 +43,8 @@ _neg_capture.txt
 /_runs/
 /04_VERIFIER/
 /docs/synapx-harness-migration/
+# RQ8 Owner Review / qualification evidence (removed from public tree; never re-stage)
+/_rq8_p1_r3_r3_evidence/
 # local agent runtime metadata
 .kilo/
 # test / coverage caches

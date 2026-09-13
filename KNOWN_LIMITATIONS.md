@@ -1,25 +1,37 @@
 # Known Limitations
 
 This document is the authoritative list of known limitations for the
-SynapX-Harness Public Alpha Candidate. Limitations are listed with
-their qualification / backlog gates where applicable.
+SynapX-Harness Public Alpha 0.1.0 release. Limitations are listed
+with their qualification / backlog gates where applicable.
 
-## Release status limitations
+## Release status
 
-- **Public Alpha Candidate only.** This is not a production-ready
-  release. Each included capability must still pass additional
-  release-qualification gates (see `PUBLIC_ALPHA_SCOPE.md`).
-- **Not yet public-released.** Internal GitLab is the only origin;
-  public GitHub publication is not authorized.
-- **No production-ready claim.** "Production-ready" is a forbidden
+- **Public Alpha 0.1.0 released.** GitHub public publication is
+  complete and the RQ8 clean-room qualification is accepted.
+- **Default Front Door canonical governed execution qualified.**
+  The `synapx` Front Door converges on the canonical governed
+  execution path under the same Harness-owned terminal authority
+  as the explicit governed path (see `README.md`).
+- **Codex Official Headless CLI is the current qualified
+  provider.** Additional agent providers are not yet qualified.
+- **Not production-ready.** Each Public Alpha capability remains
+  subject to the scope and qualification boundaries in
+  `PUBLIC_ALPHA_SCOPE.md`. "Production-ready" is a forbidden
   claim for Public Alpha.
 
 ## Platform limitations
 
+- **Python/OSS-focused qualification.** Public Alpha
+  qualification is Python/OSS focused. Broad language and
+  framework coverage is not claimed.
 - **Python >= 3.12.** `requires-python = ">=3.12"`. No Python 3.13+
   testing in this release.
-- **uv-based install.** `uv` is the implied build system. `pip` /
-  `poetry` install paths are not exercised.
+- **Qualified install path is narrow.** The qualified path is
+  installing the released `0.1.0` Wheel with `pip` into a clean
+  virtual environment (the RQ8 wheel-only clean-install path
+  documented in `README.md`). `uv`-based, `poetry`-based, and
+  other install surfaces are not exercised and remain
+  unqualified.
 - **Large source context on Windows.** When the governed pipeline
   embeds a very large source file (~40KB or more) into a Codex
   instruction that is then passed through a Windows `CreateProcess`
@@ -48,12 +60,12 @@ their qualification / backlog gates where applicable.
 
 ## Front Door limitations
 
-- **Front Door default runtime wiring not yet qualified.** The
-  `synapx` Front Door is implemented, but its default `RuntimePort`
-  is not yet wired to the governed runtime for a normal end-user
-  installation. This is a release qualification target for RQ-3.
+- **Minimal interactive Front Door.** The `synapx` Front Door runs
+  the canonical governed execution path, but its interactive
+  surface is intentionally minimal, not a full TUI.
 - **No resume / history UI.** There is no `synapx resume`, no
-  history browser, and no interactive Execution Map in Public Alpha.
+  history browser, no interactive Execution Map, and no full
+  graphical Evidence Explorer in Public Alpha.
 
 ## Orchestration limitations
 
@@ -63,6 +75,14 @@ their qualification / backlog gates where applicable.
 - **No cost-aware model routing.** Single Codex model per invocation.
 
 ## Validation / verification limitations
+
+- **Explicit allowed write set required.** Mutation tasks require
+  an explicitly declared allowed write set. There is no automatic
+  scope inference; missing scope fails closed before mutation.
+- **Qualified RED expectation required where RED qualification
+  applies.** Repair paths that require a known failing state must
+  bind the observed failure to a qualified expectation before
+  mutation authority is granted.
 
 - **Verification has no benchmark.** No benchmark numbers ship in
   Public Alpha. Performance claims are deferred until RQ-6B1.
