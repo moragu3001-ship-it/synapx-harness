@@ -1,13 +1,18 @@
 # Known Limitations
 
-This document is the authoritative list of known limitations for the
-SynapX-Harness Public Alpha 0.1.0 release. Limitations are listed
+This document is the current known-limitations list for the
+Synareon Harness 0.1.x Public Alpha line.
+
+The initial v0.1.0 release was published as SynapX-Harness 0.1.0;
+historical release identity is preserved.
+
+Limitations are listed
 with their qualification / backlog gates where applicable.
 
 ## Release status
 
 - **Public Alpha 0.1.0 released.** GitHub public publication is
-  complete and the RQ8 clean-room qualification is accepted.
+  complete and the independent release validation is accepted.
 - **Default Front Door canonical governed execution qualified.**
   The `synapx` Front Door converges on the canonical governed
   execution path under the same Harness-owned terminal authority
@@ -28,8 +33,8 @@ with their qualification / backlog gates where applicable.
   testing in this release.
 - **Qualified install path is narrow.** The qualified path is
   installing the released `0.1.0` Wheel with `pip` into a clean
-  virtual environment (the RQ8 wheel-only clean-install path
-  documented in `README.md`). `uv`-based, `poetry`-based, and
+  virtual environment (the packaged-wheel validation path
+ documented in `README.md`). `uv`-based, `poetry`-based, and
   other install surfaces are not exercised and remain
   unqualified.
 - **Large source context on Windows.** When the governed pipeline
@@ -46,7 +51,7 @@ with their qualification / backlog gates where applicable.
 
 - **Codex headless CLI only.** The only supported agent surface in
   Public Alpha is the Codex headless CLI invocation (`codex exec`).
-- **Codex authentication owned by user / vendor.** SynapX-Harness
+- **Codex authentication owned by user / vendor.** Synareon Harness
   does not provide Codex authentication. The user authenticates
   Codex CLI independently.
 - **No Codex SDK / API adapter.** No SDK backend exists; the SDK
@@ -122,7 +127,7 @@ with their qualification / backlog gates where applicable.
 
 ## Stability expectations
 
-- **0.x API breakage is possible.** SynapX-Harness follows SemVer
+- **0.x API breakage is possible.** Synareon Harness follows SemVer
   0.x conventions. Minor versions may contain breaking changes.
   Pin exact versions in any downstream consumption.
 

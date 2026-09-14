@@ -16,6 +16,9 @@ All notable changes to this project are documented here.
 - `KNOWN_LIMITATIONS.md`: retired pre-publication active-state claims; reflects released 0.1.0 truth. Install-path limitation narrowed to the qualified pip-wheel clean-install path.
 - `PUBLIC_ALPHA_SCOPE.md`: separated Scope Freeze from Qualification State; historical scope-freeze wording labeled as historical.
 - GitHub repository metadata: description and topic set aligned with the Public Alpha.
+- Public project brand renamed from SynapX-Harness to Synareon Harness.
+- GitHub repository renamed to `synareon-harness`.
+- Historical `v0.1.0` release identity and artifacts remain unchanged.
 
 ## [0.1.0] - 2026-09-14 - Public Alpha
 

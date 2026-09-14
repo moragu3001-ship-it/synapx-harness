@@ -1,7 +1,11 @@
-# SynapX-Harness Public Alpha Scope
+# Synareon Harness Public Alpha Scope
 
-This document is the authoritative Public Alpha scope statement for
-SynapX-Harness as of release scope freeze. It is owned by the
+This document preserves the Public Alpha scope originally frozen for SynapX-Harness 0.1.0.
+The project is now publicly branded Synareon Harness.
+Frozen capability counts and IDs are unchanged.
+Current qualification state may be described using current public terminology.
+
+This document is the authoritative Public Alpha scope statement as of release scope freeze. It is owned by the
 Project Owner and binding for the Public Alpha release.
 
 ## Scope Freeze != Qualification State
@@ -15,7 +19,7 @@ Scope freeze and qualification state are separate dimensions:
   released and qualified. Current truth:
   - `v0.1.0` Public Alpha released.
   - GitHub public publication complete.
-  - RQ8-qualified governed Front Door path: the default `synapx`
+  - Independently-validated governed Front Door path: the default `synapx`
     Front Door converges on the canonical governed execution
     under the same Harness-owned terminal authority as the
     explicit governed path.
@@ -126,9 +130,9 @@ See `KNOWN_LIMITATIONS.md` for the current qualification gaps.
 - It does not claim full agent coverage. Only Codex (headless CLI) is
   in the Public Alpha support contract.
 - [HISTORICAL — scope-freeze wording] At scope freeze, the Front
-  Door's default user-runtime wiring was an open
-  release-qualification target. Current truth: the RQ8-qualified
-  governed Front Door path is released in `v0.1.0` (see
+   Door's default user-runtime wiring was an open
+   release-qualification target. Current truth: the independently-validated
+   governed Front Door path is released in `v0.1.0` (see
   [Scope Freeze != Qualification State](#scope-freeze--qualification-state)
   and `KNOWN_LIMITATIONS.md`).
 

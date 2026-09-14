@@ -1,6 +1,6 @@
-# Contributing to SynapX-Harness
+# Contributing to Synareon Harness
 
-Thank you for your interest in the SynapX-Harness Public Alpha (`0.1.x`).
+Thank you for your interest in the Synareon Harness Public Alpha (`0.1.x`).
 
 ## Useful contribution types
 
@@ -16,7 +16,7 @@ Thank you for your interest in the SynapX-Harness Public Alpha (`0.1.x`).
 
 Please include:
 
-- SynapX version
+- Synareon Harness version
 - OS
 - Python version
 - Agent / provider (and Codex version where relevant)
@@ -46,13 +46,13 @@ evidence, or terminal completion.
 
 Every non-trivial change should answer:
 
-> If coding agents become much smarter, should this responsibility still remain in SynapX?
+> If coding agents become much smarter, should this responsibility still remain in Synareon?
 
 Possible architectural dispositions:
 
-- **KEEP** — the responsibility stays in SynapX
+- **KEEP** — the responsibility stays in Synareon
 - **SPLIT** — part stays, part moves to the agent or tooling
-- **DELEGATE** — the responsibility moves out of SynapX
+- **DELEGATE** — the responsibility moves out of Synareon
 - **REJECT** — the change is declined
 
 ## Scope notes

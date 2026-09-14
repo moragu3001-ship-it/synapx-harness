@@ -1,12 +1,12 @@
-# SynapX-Harness
+# Synareon Harness
 
-**Use your coding agent. SynapX checks whether the work is actually complete.**
+**Use your coding agent. Synareon checks whether the work is actually complete.**
 
-SynapX-Harness is an open-source assurance layer for coding-agent execution.
+Synareon Harness is an open-source assurance layer for coding-agent execution.
 
-Your coding agent still explores, reasons, writes code, and fixes bugs. SynapX controls the assurance boundary around that work: whether execution was admitted, whether mutation stayed in scope, whether deterministic verification passed, whether the evidence is sufficient, and whether completion may be declared.
+Your coding agent still explores, reasons, writes code, and fixes bugs. Synareon controls the assurance boundary around that work: whether execution was admitted, whether mutation stayed in scope, whether deterministic verification passed, whether the evidence is sufficient, and whether completion may be declared.
 
-> **Agent DONE ≠ SynapX COMPLETED.**
+> **Agent DONE ≠ Synareon COMPLETED.**
 
 **Public Alpha 0.1.0** · Codex-first · Not production-certified
 
@@ -16,7 +16,7 @@ Public Alpha currently supports the **Codex Official Headless CLI**.
 
 ## Public Alpha in action
 
-Representative output from the accepted RQ8 governed clean-room path:
+Representative output from the accepted independent release validation path:
 
 ```text
 
@@ -48,6 +48,9 @@ VERIFIED
 
 ```
 
+The 0.1.x runtime retains its original SynapX compatibility labels.
+The public project brand is now Synareon Harness.
+
 `VERIFIED` is not an agent self-report.
 
 It is the public presentation of a Harness-owned terminal decision reached after the governed execution path qualifies the required controls.
@@ -58,7 +61,7 @@ Internally, terminal completion authority remains separate from the UI presentat
 
 ## Quick Start — validated Windows path
 
-The Public Alpha clean-room qualification path was validated on Windows using a sealed Wheel on a separate PC.
+The Public Alpha validation path was validated on Windows using a sealed Wheel on a separate machine.
 
 ### Requirements
 
@@ -68,7 +71,7 @@ The Public Alpha clean-room qualification path was validated on Windows using a 
 
 * Codex Official Headless CLI available on `PATH`
 
-RQ8 clean-room qualification used:
+Independent release validation used:
 
 ```text
 
@@ -104,7 +107,7 @@ synapx doctor
 
 A ready environment reports:
 
-* installed SynapX-Harness distribution
+* installed Synareon Harness compatibility distribution (`synapx-harness`)
 
 * supported coding agent
 
@@ -142,7 +145,7 @@ synapx --workspace . --task "$TASK"
 
 ```
 
-If the required write scope is missing, SynapX may stop with:
+If the required write scope is missing, Synareon may stop with:
 
 ```text
 
@@ -232,11 +235,11 @@ Terminal Decision
 
 The coding agent performs the reasoning and implementation work.
 
-SynapX decides whether the result is qualified to be called complete.
+Synareon decides whether the result is qualified to be called complete.
 
 ---
 
-## Why SynapX?
+## Why Synareon?
 
 A coding agent can say:
 
@@ -252,7 +255,7 @@ A coding agent can say:
 
 Those statements are useful proposals, but they are still produced by a probabilistic system.
 
-SynapX-Harness asks a different question:
+Synareon Harness asks a different question:
 
 > **What evidence qualifies this work for completion?**
 
@@ -266,7 +269,7 @@ This lets an agent remain useful and autonomous without making its own completio
 
 ## A failure that shaped Public Alpha
 
-During RQ8 clean-room dogfooding, an early Front Door path could present:
+During final Public Alpha release validation, an early Front Door path could present:
 
 ```text
 
@@ -350,9 +353,9 @@ See `KNOWN_LIMITATIONS.md` and `PUBLIC_ALPHA_SCOPE.md` for authoritative reposit
 
 ---
 
-## RQ8 clean-room validation
+## Independent release validation
 
-Public Alpha's core governed execution path was qualified through RQ8 clean-room dogfooding on a separate Windows PC using a sealed Wheel rather than the SynapX-Harness source checkout.
+Public Alpha's core governed execution path was qualified through independent release validation on a separate Windows machine using a sealed Wheel rather than the source checkout.
 
 The target was a fresh checkout of:
 
@@ -444,7 +447,7 @@ with process exit code:
 
 ```
 
-The accepted RQ8 record reports an operator-observed final independent GREEN result of:
+The accepted validation record reports an operator-observed final independent GREEN result of:
 
 ```text
 
@@ -452,7 +455,7 @@ The accepted RQ8 record reports an operator-observed final independent GREEN res
 
 ```
 
-The standalone raw GREEN execution receipt was not preserved, so this README does not claim stronger evidence than the accepted RQ8 record supports.
+The standalone raw GREEN execution receipt was not preserved, so this README does not claim stronger evidence than the accepted validation record supports.
 
 This is qualification evidence for the Public Alpha execution path.
 
@@ -460,9 +463,9 @@ It is **not** a benchmark claim about superiority over raw coding-agent workflow
 
 ---
 
-## How SynapX works
+## How Synareon works
 
-SynapX separates **agent intelligence** from **execution assurance**.
+Synareon separates **agent intelligence** from **execution assurance**.
 
 ### Coding agent
 
@@ -486,7 +489,7 @@ tool use
 
 ```
 
-### SynapX-Harness
+### Synareon Harness
 
 Focuses on:
 
@@ -540,7 +543,7 @@ The public presentation label is derived from the governed terminal state; the F
 
 ## Controlled RED qualification
 
-For repair paths that require a known failing state, SynapX does not assume:
+For repair paths that require a known failing state, Synareon does not assume:
 
 ```text
 
@@ -606,7 +609,7 @@ Raw coding agent
 
 vs
 
-Coding agent + SynapX-Harness
+Coding agent + Synareon Harness
 
 ```
 
@@ -632,7 +635,7 @@ Future measurements may examine:
 
 Numbers will be published only when the corresponding task set, revisions, lineage, raw evidence, and reproduction method are available.
 
-SynapX-Harness is also an open experiment in Agent Assurance:
+Synareon Harness is also an open experiment in Agent Assurance:
 
 ```text
 
@@ -662,7 +665,7 @@ AI coding agents were extensively used to assist implementation and verification
 
 Architecture, contracts, acceptance criteria, qualification gates, and final release decisions remained maintainer-controlled.
 
-This disclosure applies to the source code, contract tests, and release documentation of SynapX-Harness.
+This disclosure applies to the source code, contract tests, and release documentation of Synareon Harness.
 
 ---
 
@@ -720,7 +723,11 @@ See `LICENSE`.
 
 ## Philosophy
 
-SynapX-Harness explores a broader question:
+### Project identity
+
+Synareon — SYNaptic Agent Runtime for Evidence-driven Orchestration Network.
+
+Synareon Harness explores a broader question:
 
 > **How can probabilistic AI agents be given meaningful autonomy while reliably converging on trustworthy outcomes without shifting the control burden back to humans?**
 
@@ -728,8 +735,28 @@ Guiding principles:
 
 > **Users experience the outcome. Contributors discover the architecture.**
 
-> **Agent DONE ≠ SynapX COMPLETED.**
+> **Agent DONE ≠ Synareon COMPLETED.**
 
 > **Failure is permitted. Unqualified completion is not.**
 
 > **Reasoning proposes. Evidence qualifies. Authority decides.**
+
+### Compatibility identity
+
+The project is now branded as Synareon Harness.
+
+The 0.1.x Python distribution, import namespace, and CLI identifiers
+retain their existing SynapX names for compatibility with the first
+Public Alpha release.
+
+Distribution: synapx-harness
+Module: synapx_harness
+CLI: synapx
+CLI: synapx-harness
+
+### Naming history
+
+Synareon Harness was initially published as SynapX-Harness 0.1.0.
+The project was renamed early in its public lifecycle to establish
+a distinct long-term OSS identity. Historical release and evidence
+records retain their original names.
